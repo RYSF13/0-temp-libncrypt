@@ -4,7 +4,12 @@
 // Key encapsulation : ML-KEM-768  (FIPS 203)
 // Signatures        : ML-DSA-44   (FIPS 204)
 // Hybrid encryption : ML-KEM-768 + XChaCha20-Poly1305
-// This file only depends on liboqs and ncrypt.h.
+//
+// ncrypt-pqc.c carries the ML-KEM-768 and ML-DSA-44 reference cores
+// (FIPS 203 / FIPS 204) in this unit, so this module is self-contained:
+// it depends only on ncrypt.h / ncrypt.c (BLAKE2b, AEAD, and the
+// constant-time comparison and wiping routines) and needs no external
+// post-quantum library at build time.
 
 #ifndef NCRYPT_PQC_H
 #define NCRYPT_PQC_H

@@ -917,7 +917,7 @@ static const fe sqrtm1  = {
 	-32595792, -7943725, 9377950, 3500415, 12389472,
 	-272473, -25146209, -2005654, 326686, 11406482,
 };
-static const fe d       = {
+static const fe ed_d     = {
 	-10913610, 13857413, -15372611, 6949391, 114729,
 	-8787816, -6275908, -3247719, -18696448, -12055116,
 };
@@ -1749,7 +1749,7 @@ static int ge_frombytes_neg_vartime(ge *h, const u8 s[32])
 	fe_frombytes(h->Y, s);
 	fe_1(h->Z);
 	fe_sq (h->T, h->Y);        // t =   y^2
-	fe_mul(h->X, h->T, d   );  // x = d*y^2
+	fe_mul(h->X, h->T, ed_d ); // x = d*y^2
 	fe_sub(h->T, h->T, h->Z);  // t =   y^2 - 1
 	fe_add(h->X, h->X, h->Z);  // x = d*y^2 + 1
 	fe_mul(h->X, h->T, h->X);  // x = (y^2 - 1) * (d*y^2 + 1)
@@ -3004,14 +3004,14 @@ static void sha512_compress(ncrypt_sha512_ctx *ctx)
 		h = g;  g = f;  f = e;  e = d  + t1;
 		d = c;  c = b;  b = a;  a = t1 + t2;
 	}
-	size_t i16 = 0;
+	size_t kbase = 0;
 	FOR(i, 1, 5) {
-		i16 += 16;
+		kbase += 16;
 		FOR (j, 0, 16) {
 			ctx->input[j] += lit_sigma1(ctx->input[(j- 2) & 15]);
 			ctx->input[j] += lit_sigma0(ctx->input[(j-15) & 15]);
 			ctx->input[j] +=            ctx->input[(j- 7) & 15];
-			u64 in = K[i16 + j] + ctx->input[j];
+			u64 in = K[kbase + j] + ctx->input[j];
 			u64 t1 = big_sigma1(e) + ch (e, f, g) + h + in;
 			u64 t2 = big_sigma0(a) + maj(a, b, c);
 			h = g;  g = f;  f = e;  e = d  + t1;
@@ -3218,10 +3218,10 @@ void ncrypt_sha512_hkdf_expand(u8       *okm,  size_t okm_size,
 {
 	int not_first = 0;
 	u8 ctr = 1;
-	u8 blk[64];
+	u8 block[64];
 
 	while (okm_size > 0) {
-		size_t out_size = MIN(okm_size, sizeof(blk));
+		size_t out_size = MIN(okm_size, sizeof(block));
 
 		ncrypt_sha512_hmac_ctx ctx;
 		ncrypt_sha512_hmac_init(&ctx, prk , prk_size);
@@ -3229,20 +3229,20 @@ void ncrypt_sha512_hkdf_expand(u8       *okm,  size_t okm_size,
 			// For some reason HKDF uses some kind of CBC mode.
 			// For some reason CTR mode alone wasn't enough.
 			// Like what, they didn't trust HMAC in 2010?  Really??
-			ncrypt_sha512_hmac_update(&ctx, blk , sizeof(blk));
+			ncrypt_sha512_hmac_update(&ctx, block, sizeof(block));
 		}
 		ncrypt_sha512_hmac_update(&ctx, info, info_size);
 		ncrypt_sha512_hmac_update(&ctx, &ctr, 1);
-		ncrypt_sha512_hmac_final(&ctx, blk);
+		ncrypt_sha512_hmac_final(&ctx, block);
 
-		COPY(okm, blk, out_size);
+		COPY(okm, block, out_size);
 
 		not_first = 1;
 		okm      += out_size;
 		okm_size -= out_size;
 		ctr++;
 	}
-	WIPE_BUFFER(blk);
+	WIPE_BUFFER(block);
 }
 
 void ncrypt_sha512_hkdf(u8       *okm , size_t okm_size,
