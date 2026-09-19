@@ -1,22 +1,22 @@
 // libncrypt-pqc 0.1.0
-// Post-quantum extension for libncrypt
+// Post-quantum extension for libncrypt.
 //
-// The ML-KEM-768 and ML-DSA-44 cores below are carried over from the
-// CRYSTALS reference implementations (public domain, by the Kyber and
-// Dilithium teams), folded into this single translation unit with all
-// internal symbols made static.  The public wrappers at the bottom of
-// the file follow libncrypt conventions: no allocation, no internal
-// RNG, seeds are wiped after use.
+// The ML-KEM-768 and ML-DSA-44 cores are derived from the CRYSTALS
+// reference implementations. Internal symbols are kept local to this
+// translation unit. The public wrappers do not allocate memory or
+// provide an RNG; callers supply and the wrappers wipe their seeds.
 //
-// Compile together with ncrypt.c (this file borrows its AEAD, BLAKE2b,
-// constant time comparison, and wiping routines).
+// Build this file together with ncrypt.c.
 
 #include "ncrypt-pqc.h"
+#include <string.h>
 
-#define KYBER_K        3   // ML-KEM-768
-#define DILITHIUM_MODE 2   // ML-DSA-44
+#define KYBER_K        3   // ML-KEM-768 parameter set
+#define DILITHIUM_MODE 2   // ML-DSA-44 parameter set
 
-// ----- fips202.h -----
+////////////////
+/// FIPS 202 ///
+////////////////
 #define SHAKE128_RATE 168
 #define SHAKE256_RATE 136
 #define SHA3_256_RATE 136
@@ -45,25 +45,14 @@ static void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inle
 static void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen);
 static void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen);
 
-// ----- fips202.c -----
-/* Based on the public domain implementation in crypto_hash/keccakc512/simple/ from
- * http://bench.cr.yp.to/supercop.html by Ronny Van Keer and the public domain "TweetFips202"
- * implementation from https://twitter.com/tweetfips202 by Gilles Van Assche, Daniel J. Bernstein,
- * and Peter Schwabe */
+
+// Keccak follows the FIPS 202 reference implementation.
 
 
 #define NROUNDS 24
 #define ROL(a, offset) ((a << offset) ^ (a >> (64-offset)))
 
-/*************************************************
-* Name:        load64
-*
-* Description: Load 8 bytes into uint64_t in little-endian order
-*
-* Arguments:   - const uint8_t *x: pointer to input byte array
-*
-* Returns the loaded 64-bit unsigned integer
-**************************************************/
+
 static uint64_t load64(const uint8_t x[8]) {
   unsigned int i;
   uint64_t r = 0;
@@ -74,14 +63,7 @@ static uint64_t load64(const uint8_t x[8]) {
   return r;
 }
 
-/*************************************************
-* Name:        store64
-*
-* Description: Store a 64-bit integer to array of 8 bytes in little-endian order
-*
-* Arguments:   - uint8_t *x: pointer to the output byte array (allocated)
-*              - uint64_t u: input 64-bit unsigned integer
-**************************************************/
+
 static void store64(uint8_t x[8], uint64_t u) {
   unsigned int i;
 
@@ -89,7 +71,7 @@ static void store64(uint8_t x[8], uint64_t u) {
     x[i] = u >> 8*i;
 }
 
-/* Keccak round constants */
+// Keccak round constants
 static const uint64_t KeccakF_RoundConstants[NROUNDS] = {
   (uint64_t)0x0000000000000001ULL,
   (uint64_t)0x0000000000008082ULL,
@@ -117,13 +99,7 @@ static const uint64_t KeccakF_RoundConstants[NROUNDS] = {
   (uint64_t)0x8000000080008008ULL
 };
 
-/*************************************************
-* Name:        KeccakF1600_StatePermute
-*
-* Description: The Keccak F1600 Permutation
-*
-* Arguments:   - uint64_t *state: pointer to input/output Keccak state
-**************************************************/
+
 static void KeccakF1600_StatePermute(uint64_t state[25])
 {
         int round;
@@ -141,7 +117,7 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
         uint64_t Ema, Eme, Emi, Emo, Emu;
         uint64_t Esa, Ese, Esi, Eso, Esu;
 
-        //copyFromState(A, state)
+        // Load the state into local variables.
         Aba = state[ 0];
         Abe = state[ 1];
         Abi = state[ 2];
@@ -169,14 +145,14 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
         Asu = state[24];
 
         for(round = 0; round < NROUNDS; round += 2) {
-            //    prepareTheta
+            // Compute the column parities for the theta step.
             BCa = Aba^Aga^Aka^Ama^Asa;
             BCe = Abe^Age^Ake^Ame^Ase;
             BCi = Abi^Agi^Aki^Ami^Asi;
             BCo = Abo^Ago^Ako^Amo^Aso;
             BCu = Abu^Agu^Aku^Amu^Asu;
 
-            //thetaRhoPiChiIotaPrepareTheta(round, A, E)
+            // Apply theta, rho, pi, chi, and iota to the first round.
             Da = BCu^ROL(BCe, 1);
             De = BCa^ROL(BCi, 1);
             Di = BCe^ROL(BCo, 1);
@@ -264,14 +240,14 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
             Eso =   BCo ^((~BCu)&  BCa );
             Esu =   BCu ^((~BCa)&  BCe );
 
-            //    prepareTheta
+            // Compute the column parities for the second theta step.
             BCa = Eba^Ega^Eka^Ema^Esa;
             BCe = Ebe^Ege^Eke^Eme^Ese;
             BCi = Ebi^Egi^Eki^Emi^Esi;
             BCo = Ebo^Ego^Eko^Emo^Eso;
             BCu = Ebu^Egu^Eku^Emu^Esu;
 
-            //thetaRhoPiChiIotaPrepareTheta(round+1, E, A)
+            // Apply theta, rho, pi, chi, and iota to the second round.
             Da = BCu^ROL(BCe, 1);
             De = BCa^ROL(BCi, 1);
             Di = BCe^ROL(BCo, 1);
@@ -360,7 +336,7 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
             Asu =   BCu ^((~BCa)&  BCe );
         }
 
-        //copyToState(state, A)
+        // Store the permuted state.
         state[ 0] = Aba;
         state[ 1] = Abe;
         state[ 2] = Abi;
@@ -388,13 +364,7 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
         state[24] = Asu;
 }
 
-/*************************************************
-* Name:        keccak_init
-*
-* Description: Initializes the Keccak state.
-*
-* Arguments:   - uint64_t *s: pointer to Keccak state
-**************************************************/
+
 static void keccak_init(uint64_t s[25])
 {
   unsigned int i;
@@ -402,19 +372,7 @@ static void keccak_init(uint64_t s[25])
     s[i] = 0;
 }
 
-/*************************************************
-* Name:        keccak_absorb
-*
-* Description: Absorb step of Keccak; incremental.
-*
-* Arguments:   - uint64_t *s: pointer to Keccak state
-*              - unsigned int pos: position in current block to be absorbed
-*              - unsigned int r: rate in bytes (e.g., 168 for SHAKE128)
-*              - const uint8_t *in: pointer to input to be absorbed into s
-*              - size_t inlen: length of input in bytes
-*
-* Returns new position pos in current block
-**************************************************/
+
 static unsigned int keccak_absorb(uint64_t s[25],
                                   unsigned int pos,
                                   unsigned int r,
@@ -437,37 +395,14 @@ static unsigned int keccak_absorb(uint64_t s[25],
   return i;
 }
 
-/*************************************************
-* Name:        keccak_finalize
-*
-* Description: Finalize absorb step.
-*
-* Arguments:   - uint64_t *s: pointer to Keccak state
-*              - unsigned int pos: position in current block to be absorbed
-*              - unsigned int r: rate in bytes (e.g., 168 for SHAKE128)
-*              - uint8_t p: domain separation byte
-**************************************************/
+
 static void keccak_finalize(uint64_t s[25], unsigned int pos, unsigned int r, uint8_t p)
 {
   s[pos/8] ^= (uint64_t)p << 8*(pos%8);
   s[r/8-1] ^= 1ULL << 63;
 }
 
-/*************************************************
-* Name:        keccak_squeeze
-*
-* Description: Squeeze step of Keccak. Squeezes arbitratrily many bytes.
-*              Modifies the state. Can be called multiple times to keep
-*              squeezing, i.e., is incremental.
-*
-* Arguments:   - uint8_t *out: pointer to output
-*              - size_t outlen: number of bytes to be squeezed (written to out)
-*              - uint64_t *s: pointer to input/output Keccak state
-*              - unsigned int pos: number of bytes in current block already squeezed
-*              - unsigned int r: rate in bytes (e.g., 168 for SHAKE128)
-*
-* Returns new position pos in current block
-**************************************************/
+
 static unsigned int keccak_squeeze(uint8_t *out,
                                    size_t outlen,
                                    uint64_t s[25],
@@ -491,18 +426,6 @@ static unsigned int keccak_squeeze(uint8_t *out,
 }
 
 
-/*************************************************
-* Name:        keccak_absorb_once
-*
-* Description: Absorb step of Keccak;
-*              non-incremental, starts by zeroeing the state.
-*
-* Arguments:   - uint64_t *s: pointer to (uninitialized) output Keccak state
-*              - unsigned int r: rate in bytes (e.g., 168 for SHAKE128)
-*              - const uint8_t *in: pointer to input to be absorbed into s
-*              - size_t inlen: length of input in bytes
-*              - uint8_t p: domain-separation byte for different Keccak-derived functions
-**************************************************/
 static void keccak_absorb_once(uint64_t s[25],
                                unsigned int r,
                                const uint8_t *in,
@@ -529,19 +452,7 @@ static void keccak_absorb_once(uint64_t s[25],
   s[(r-1)/8] ^= 1ULL << 63;
 }
 
-/*************************************************
-* Name:        keccak_squeezeblocks
-*
-* Description: Squeeze step of Keccak. Squeezes full blocks of r bytes each.
-*              Modifies the state. Can be called multiple times to keep
-*              squeezing, i.e., is incremental. Assumes zero bytes of current
-*              block have already been squeezed.
-*
-* Arguments:   - uint8_t *out: pointer to output blocks
-*              - size_t nblocks: number of blocks to be squeezed (written to out)
-*              - uint64_t *s: pointer to input/output Keccak state
-*              - unsigned int r: rate in bytes (e.g., 168 for SHAKE128)
-**************************************************/
+
 static void keccak_squeezeblocks(uint8_t *out,
                                  size_t nblocks,
                                  uint64_t s[25],
@@ -558,40 +469,20 @@ static void keccak_squeezeblocks(uint8_t *out,
   }
 }
 
-/*************************************************
-* Name:        shake128_init
-*
-* Description: Initilizes Keccak state for use as SHAKE128 XOF
-*
-* Arguments:   - keccak_state *state: pointer to (uninitialized) Keccak state
-**************************************************/
+
 static void shake128_init(keccak_state *state)
 {
   keccak_init(state->s);
   state->pos = 0;
 }
 
-/*************************************************
-* Name:        shake128_absorb
-*
-* Description: Absorb step of the SHAKE128 XOF; incremental.
-*
-* Arguments:   - keccak_state *state: pointer to (initialized) output Keccak state
-*              - const uint8_t *in: pointer to input to be absorbed into s
-*              - size_t inlen: length of input in bytes
-**************************************************/
+
 static void shake128_absorb(keccak_state *state, const uint8_t *in, size_t inlen)
 {
   state->pos = keccak_absorb(state->s, state->pos, SHAKE128_RATE, in, inlen);
 }
 
-/*************************************************
-* Name:        shake128_finalize
-*
-* Description: Finalize absorb step of the SHAKE128 XOF.
-*
-* Arguments:   - keccak_state *state: pointer to Keccak state
-**************************************************/
+
 static void shake128_finalize(keccak_state *state)
 {
   keccak_finalize(state->s, state->pos, SHAKE128_RATE, 0x1F);
@@ -599,136 +490,58 @@ static void shake128_finalize(keccak_state *state)
 }
 
 
-/*************************************************
-* Name:        shake128_absorb_once
-*
-* Description: Initialize, absorb into and finalize SHAKE128 XOF; non-incremental.
-*
-* Arguments:   - keccak_state *state: pointer to (uninitialized) output Keccak state
-*              - const uint8_t *in: pointer to input to be absorbed into s
-*              - size_t inlen: length of input in bytes
-**************************************************/
 static void shake128_absorb_once(keccak_state *state, const uint8_t *in, size_t inlen)
 {
   keccak_absorb_once(state->s, SHAKE128_RATE, in, inlen, 0x1F);
   state->pos = SHAKE128_RATE;
 }
 
-/*************************************************
-* Name:        shake128_squeezeblocks
-*
-* Description: Squeeze step of SHAKE128 XOF. Squeezes full blocks of
-*              SHAKE128_RATE bytes each. Can be called multiple times
-*              to keep squeezing. Assumes new block has not yet been
-*              started (state->pos = SHAKE128_RATE).
-*
-* Arguments:   - uint8_t *out: pointer to output blocks
-*              - size_t nblocks: number of blocks to be squeezed (written to output)
-*              - keccak_state *s: pointer to input/output Keccak state
-**************************************************/
+
 static void shake128_squeezeblocks(uint8_t *out, size_t nblocks, keccak_state *state)
 {
   keccak_squeezeblocks(out, nblocks, state->s, SHAKE128_RATE);
 }
 
-/*************************************************
-* Name:        shake256_init
-*
-* Description: Initilizes Keccak state for use as SHAKE256 XOF
-*
-* Arguments:   - keccak_state *state: pointer to (uninitialized) Keccak state
-**************************************************/
+
 static void shake256_init(keccak_state *state)
 {
   keccak_init(state->s);
   state->pos = 0;
 }
 
-/*************************************************
-* Name:        shake256_absorb
-*
-* Description: Absorb step of the SHAKE256 XOF; incremental.
-*
-* Arguments:   - keccak_state *state: pointer to (initialized) output Keccak state
-*              - const uint8_t *in: pointer to input to be absorbed into s
-*              - size_t inlen: length of input in bytes
-**************************************************/
+
 static void shake256_absorb(keccak_state *state, const uint8_t *in, size_t inlen)
 {
   state->pos = keccak_absorb(state->s, state->pos, SHAKE256_RATE, in, inlen);
 }
 
-/*************************************************
-* Name:        shake256_finalize
-*
-* Description: Finalize absorb step of the SHAKE256 XOF.
-*
-* Arguments:   - keccak_state *state: pointer to Keccak state
-**************************************************/
+
 static void shake256_finalize(keccak_state *state)
 {
   keccak_finalize(state->s, state->pos, SHAKE256_RATE, 0x1F);
   state->pos = SHAKE256_RATE;
 }
 
-/*************************************************
-* Name:        shake256_squeeze
-*
-* Description: Squeeze step of SHAKE256 XOF. Squeezes arbitraily many
-*              bytes. Can be called multiple times to keep squeezing.
-*
-* Arguments:   - uint8_t *out: pointer to output blocks
-*              - size_t outlen : number of bytes to be squeezed (written to output)
-*              - keccak_state *s: pointer to input/output Keccak state
-**************************************************/
+
 static void shake256_squeeze(uint8_t *out, size_t outlen, keccak_state *state)
 {
   state->pos = keccak_squeeze(out, outlen, state->s, state->pos, SHAKE256_RATE);
 }
 
-/*************************************************
-* Name:        shake256_absorb_once
-*
-* Description: Initialize, absorb into and finalize SHAKE256 XOF; non-incremental.
-*
-* Arguments:   - keccak_state *state: pointer to (uninitialized) output Keccak state
-*              - const uint8_t *in: pointer to input to be absorbed into s
-*              - size_t inlen: length of input in bytes
-**************************************************/
+
 static void shake256_absorb_once(keccak_state *state, const uint8_t *in, size_t inlen)
 {
   keccak_absorb_once(state->s, SHAKE256_RATE, in, inlen, 0x1F);
   state->pos = SHAKE256_RATE;
 }
 
-/*************************************************
-* Name:        shake256_squeezeblocks
-*
-* Description: Squeeze step of SHAKE256 XOF. Squeezes full blocks of
-*              SHAKE256_RATE bytes each. Can be called multiple times
-*              to keep squeezing. Assumes next block has not yet been
-*              started (state->pos = SHAKE256_RATE).
-*
-* Arguments:   - uint8_t *out: pointer to output blocks
-*              - size_t nblocks: number of blocks to be squeezed (written to output)
-*              - keccak_state *s: pointer to input/output Keccak state
-**************************************************/
+
 static void shake256_squeezeblocks(uint8_t *out, size_t nblocks, keccak_state *state)
 {
   keccak_squeezeblocks(out, nblocks, state->s, SHAKE256_RATE);
 }
 
 
-/*************************************************
-* Name:        shake256
-*
-* Description: SHAKE256 XOF with non-incremental API
-*
-* Arguments:   - uint8_t *out: pointer to output
-*              - size_t outlen: requested output length in bytes
-*              - const uint8_t *in: pointer to input
-*              - size_t inlen: length of input in bytes
-**************************************************/
 static void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
 {
   size_t nblocks;
@@ -742,15 +555,7 @@ static void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inle
   shake256_squeeze(out, outlen, &state);
 }
 
-/*************************************************
-* Name:        sha3_256
-*
-* Description: SHA3-256 with non-incremental API
-*
-* Arguments:   - uint8_t *h: pointer to output (32 bytes)
-*              - const uint8_t *in: pointer to input
-*              - size_t inlen: length of input in bytes
-**************************************************/
+
 static void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen)
 {
   unsigned int i;
@@ -762,15 +567,7 @@ static void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen)
     store64(h+8*i,s[i]);
 }
 
-/*************************************************
-* Name:        sha3_512
-*
-* Description: SHA3-512 with non-incremental API
-*
-* Arguments:   - uint8_t *h: pointer to output (64 bytes)
-*              - const uint8_t *in: pointer to input
-*              - size_t inlen: length of input in bytes
-**************************************************/
+
 static void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
 {
   unsigned int i;
@@ -782,13 +579,15 @@ static void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
     store64(h+8*i,s[i]);
 }
 
-// ----- mlkem/params.h -----
+//////////////
+/// ML-KEM ///
+//////////////
 #ifndef KYBER_K
-#define KYBER_K 3	/* Change this for different security strengths */
+#define KYBER_K 3	// ML-KEM parameter set.
 #endif
 
 
-/* Don't change parameters below this line */
+// Parameter values below are fixed by the selected parameter set.
 #if   (KYBER_K == 2)
 #elif (KYBER_K == 3)
 #elif (KYBER_K == 4)
@@ -799,8 +598,8 @@ static void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
 #define KYBER_N 256
 #define KYBER_Q 3329
 
-#define KYBER_SYMBYTES 32   /* size in bytes of hashes, and seeds */
-#define KYBER_SSBYTES  32   /* size in bytes of shared key */
+#define KYBER_SYMBYTES 32   // Hash and seed size, in bytes.
+#define KYBER_SSBYTES  32   // Shared-secret size, in bytes.
 
 #define KYBER_POLYBYTES		384
 #define KYBER_POLYVECBYTES	(KYBER_K * KYBER_POLYBYTES)
@@ -827,19 +626,18 @@ static void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
 #define KYBER_INDCPA_BYTES          (KYBER_POLYVECCOMPRESSEDBYTES + KYBER_POLYCOMPRESSEDBYTES)
 
 #define KYBER_PUBLICKEYBYTES  (KYBER_INDCPA_PUBLICKEYBYTES)
-/* 32 bytes of additional space to save H(pk) */
+// Space reserved for H(pk).
 #define KYBER_SECRETKEYBYTES  (KYBER_INDCPA_SECRETKEYBYTES + KYBER_INDCPA_PUBLICKEYBYTES + 2*KYBER_SYMBYTES)
 #define KYBER_CIPHERTEXTBYTES (KYBER_INDCPA_BYTES)
 
-// ----- mlkem/reduce.h -----
-#define MLKEM_MONT -1044 // 2^16 mod q
-#define MLKEM_QINV -3327 // q^-1 mod 2^16
+
+#define MLKEM_MONT -1044 // Montgomery factor modulo q.
+#define MLKEM_QINV -3327 // Negative modular inverse of q.
 
 static int16_t mlkem_montgomery_reduce(int32_t a);
 
 static int16_t mlkem_barrett_reduce(int16_t a);
 
-// ----- mlkem/ntt.h -----
 
 static void mlkem_ntt(int16_t mlkem_poly[256]);
 
@@ -847,11 +645,8 @@ static void mlkem_invntt(int16_t mlkem_poly[256]);
 
 static void mlkem_basemul(int16_t r[2], const int16_t a[2], const int16_t b[2], int16_t zeta);
 
-// ----- mlkem/poly.h -----
-/*
- * Elements of R_q = Z_q[X]/(X^n + 1). Represents polynomial
- * coeffs[0] + X*coeffs[1] + X^2*coeffs[2] + ... + X^{n-1}*coeffs[n-1]
- */
+
+// A polynomial is represented by 256 coefficients in Z_q[X]/(X^256 + 1).
 typedef struct{
   int16_t coeffs[KYBER_N];
 } mlkem_poly;
@@ -879,12 +674,12 @@ static void mlkem_poly_reduce(mlkem_poly *r);
 static void mlkem_poly_add(mlkem_poly *r, const mlkem_poly *a, const mlkem_poly *b);
 static void mlkem_poly_sub(mlkem_poly *r, const mlkem_poly *a, const mlkem_poly *b);
 
-// ----- mlkem/cbd.h -----
+
 static void mlkem_poly_cbd_eta1(mlkem_poly *r, const uint8_t buf[KYBER_ETA1*KYBER_N/4]);
 
 static void mlkem_poly_cbd_eta2(mlkem_poly *r, const uint8_t buf[KYBER_ETA2*KYBER_N/4]);
 
-// ----- mlkem/polyvec.h -----
+
 typedef struct{
   mlkem_poly vec[KYBER_K];
 } mlkem_polyvec;
@@ -904,14 +699,14 @@ static void mlkem_polyvec_reduce(mlkem_polyvec *r);
 
 static void mlkem_polyvec_add(mlkem_polyvec *r, const mlkem_polyvec *a, const mlkem_polyvec *b);
 
-// ----- mlkem/verify.h -----
+
 static int mlkem_verify(const uint8_t *a, const uint8_t *b, size_t len);
 
 static void mlkem_cmov(uint8_t *r, const uint8_t *x, size_t len, uint8_t b);
 
 static void mlkem_cmov_int16(int16_t *r, int16_t v, uint16_t b);
 
-// ----- mlkem/symmetric.h -----
+
 typedef keccak_state mlkem_xof_state;
 
 static void mlkem_shake128_absorb(keccak_state *s,
@@ -932,7 +727,7 @@ static void mlkem_shake256_rkprf(uint8_t out[KYBER_SSBYTES], const uint8_t key[K
 #define prf(OUT, OUTBYTES, KEY, NONCE) mlkem_shake256_prf(OUT, OUTBYTES, KEY, NONCE)
 #define rkprf(OUT, KEY, INPUT) mlkem_shake256_rkprf(OUT, KEY, INPUT)
 
-// ----- mlkem/indcpa.h -----
+
 static void mlkem_gen_matrix(mlkem_polyvec *a, const uint8_t seed[KYBER_SYMBYTES], int transposed);
 
 static void mlkem_indcpa_keypair_derand(uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES],
@@ -948,7 +743,7 @@ static void mlkem_indcpa_dec(uint8_t m[KYBER_INDCPA_MSGBYTES],
                 const uint8_t c[KYBER_INDCPA_BYTES],
                 const uint8_t sk[KYBER_INDCPA_SECRETKEYBYTES]);
 
-// ----- mlkem/kem.h -----
+
 #define MLKEM_CRYPTO_SECRETKEYBYTES  KYBER_SECRETKEYBYTES
 #define MLKEM_CRYPTO_PUBLICKEYBYTES  KYBER_PUBLICKEYBYTES
 #define MLKEM_CRYPTO_CIPHERTEXTBYTES KYBER_CIPHERTEXTBYTES
@@ -970,18 +765,7 @@ static int mlkem_enc_derand(uint8_t *ct, uint8_t *ss, const uint8_t *pk, const u
 
 static int mlkem_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
 
-// ----- mlkem/reduce.c -----
-/*************************************************
-* Name:        mlkem_montgomery_reduce
-*
-* Description: Montgomery reduction; given a 32-bit integer a, computes
-*              16-bit integer congruent to a * R^-1 mod q, where R=2^16
-*
-* Arguments:   - int32_t a: input integer to be reduced;
-*                           has to be in {-q2^15,...,q2^15-1}
-*
-* Returns:     integer in {-q+1,...,q-1} congruent to a * R^-1 modulo q.
-**************************************************/
+
 static int16_t mlkem_montgomery_reduce(int32_t a)
 {
   int16_t t;
@@ -991,16 +775,7 @@ static int16_t mlkem_montgomery_reduce(int32_t a)
   return t;
 }
 
-/*************************************************
-* Name:        mlkem_barrett_reduce
-*
-* Description: Barrett reduction; given a 16-bit integer a, computes
-*              centered representative congruent to a mod q in {-(q-1)/2,...,(q-1)/2}
-*
-* Arguments:   - int16_t a: input integer to be reduced
-*
-* Returns:     integer in {-(q-1)/2,...,(q-1)/2} congruent to a modulo q.
-**************************************************/
+
 static int16_t mlkem_barrett_reduce(int16_t a) {
   int16_t t;
   const int16_t v = ((1<<26) + KYBER_Q/2)/KYBER_Q;
@@ -1010,39 +785,8 @@ static int16_t mlkem_barrett_reduce(int16_t a) {
   return a - t;
 }
 
-// ----- mlkem/ntt.c -----
-/* Code to generate mlkem_zetas and zetas_inv used in the number-theoretic transform:
 
-#define KYBER_ROOT_OF_UNITY 17
-
-static const uint8_t tree[128] = {
-  0, 64, 32, 96, 16, 80, 48, 112, 8, 72, 40, 104, 24, 88, 56, 120,
-  4, 68, 36, 100, 20, 84, 52, 116, 12, 76, 44, 108, 28, 92, 60, 124,
-  2, 66, 34, 98, 18, 82, 50, 114, 10, 74, 42, 106, 26, 90, 58, 122,
-  6, 70, 38, 102, 22, 86, 54, 118, 14, 78, 46, 110, 30, 94, 62, 126,
-  1, 65, 33, 97, 17, 81, 49, 113, 9, 73, 41, 105, 25, 89, 57, 121,
-  5, 69, 37, 101, 21, 85, 53, 117, 13, 77, 45, 109, 29, 93, 61, 125,
-  3, 67, 35, 99, 19, 83, 51, 115, 11, 75, 43, 107, 27, 91, 59, 123,
-  7, 71, 39, 103, 23, 87, 55, 119, 15, 79, 47, 111, 31, 95, 63, 127
-};
-
-static void init_ntt() {
-  unsigned int i;
-  int16_t tmp[128];
-
-  tmp[0] = MLKEM_MONT;
-  for(i=1;i<128;i++)
-    tmp[i] = fqmul(tmp[i-1],MLKEM_MONT*KYBER_ROOT_OF_UNITY % KYBER_Q);
-
-  for(i=0;i<128;i++) {
-    mlkem_zetas[i] = tmp[tree[i]];
-    if(mlkem_zetas[i] > KYBER_Q/2)
-      mlkem_zetas[i] -= KYBER_Q;
-    if(mlkem_zetas[i] < -KYBER_Q/2)
-      mlkem_zetas[i] += KYBER_Q;
-  }
-}
-*/
+// The constants below are generated from the ML-KEM root of unity.
 
 static const int16_t mlkem_zetas[128] = {
   -1044,  -758,  -359, -1517,  1493,  1422,   287,   202,
@@ -1063,28 +807,12 @@ static const int16_t mlkem_zetas[128] = {
    -108,  -308,   996,   991,   958, -1460,  1522,  1628
 };
 
-/*************************************************
-* Name:        fqmul
-*
-* Description: Multiplication followed by Montgomery reduction
-*
-* Arguments:   - int16_t a: first factor
-*              - int16_t b: second factor
-*
-* Returns 16-bit integer congruent to a*b*R^{-1} mod q
-**************************************************/
+
 static int16_t fqmul(int16_t a, int16_t b) {
   return mlkem_montgomery_reduce((int32_t)a*b);
 }
 
-/*************************************************
-* Name:        mlkem_ntt
-*
-* Description: Inplace number-theoretic transform (NTT) in Rq.
-*              input is in standard order, output is in bitreversed order
-*
-* Arguments:   - int16_t r[256]: pointer to input/output vector of elements of Zq
-**************************************************/
+
 static void mlkem_ntt(int16_t r[256]) {
   unsigned int len, start, j, k;
   int16_t t, zeta;
@@ -1102,19 +830,11 @@ static void mlkem_ntt(int16_t r[256]) {
   }
 }
 
-/*************************************************
-* Name:        invntt_tomont
-*
-* Description: Inplace inverse number-theoretic transform in Rq and
-*              multiplication by Montgomery factor 2^16.
-*              Input is in bitreversed order, output is in standard order
-*
-* Arguments:   - int16_t r[256]: pointer to input/output vector of elements of Zq
-**************************************************/
+
 static void mlkem_invntt(int16_t r[256]) {
   unsigned int start, len, j, k;
   int16_t t, zeta;
-  const int16_t f = 1441; // mont^2/128
+  const int16_t f = 1441; // Montgomery factor squared divided by 128.
 
   k = 127;
   for(len = 2; len <= 128; len <<= 1) {
@@ -1133,17 +853,7 @@ static void mlkem_invntt(int16_t r[256]) {
     r[j] = fqmul(r[j], f);
 }
 
-/*************************************************
-* Name:        mlkem_basemul
-*
-* Description: Multiplication of polynomials in Zq[X]/(X^2-zeta)
-*              used for multiplication of elements in Rq in NTT domain
-*
-* Arguments:   - int16_t r[2]: pointer to the output polynomial
-*              - const int16_t a[2]: pointer to the first factor
-*              - const int16_t b[2]: pointer to the second factor
-*              - int16_t zeta: integer defining the reduction polynomial
-**************************************************/
+
 static void mlkem_basemul(int16_t r[2], const int16_t a[2], const int16_t b[2], int16_t zeta)
 {
   r[0]  = fqmul(a[1], b[1]);
@@ -1153,17 +863,7 @@ static void mlkem_basemul(int16_t r[2], const int16_t a[2], const int16_t b[2], 
   r[1] += fqmul(a[1], b[0]);
 }
 
-// ----- mlkem/cbd.c -----
-/*************************************************
-* Name:        load32_littleendian
-*
-* Description: load 4 bytes into a 32-bit integer
-*              in little-endian order
-*
-* Arguments:   - const uint8_t *x: pointer to input byte array
-*
-* Returns 32-bit unsigned integer loaded from x
-**************************************************/
+
 static uint32_t load32_littleendian(const uint8_t x[4])
 {
   uint32_t r;
@@ -1174,17 +874,7 @@ static uint32_t load32_littleendian(const uint8_t x[4])
   return r;
 }
 
-/*************************************************
-* Name:        load24_littleendian
-*
-* Description: load 3 bytes into a 32-bit integer
-*              in little-endian order.
-*              This function is only needed for Kyber-512
-*
-* Arguments:   - const uint8_t *x: pointer to input byte array
-*
-* Returns 32-bit unsigned integer loaded from x (most significant byte is zero)
-**************************************************/
+
 #if KYBER_ETA1 == 3
 static uint32_t load24_littleendian(const uint8_t x[3])
 {
@@ -1197,16 +887,6 @@ static uint32_t load24_littleendian(const uint8_t x[3])
 #endif
 
 
-/*************************************************
-* Name:        cbd2
-*
-* Description: Given an array of uniformly random bytes, compute
-*              polynomial with coefficients distributed according to
-*              a centered binomial distribution with parameter eta=2
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const uint8_t *buf: pointer to input byte array
-**************************************************/
 static void cbd2(mlkem_poly *r, const uint8_t buf[2*KYBER_N/4])
 {
   unsigned int i,j;
@@ -1226,17 +906,7 @@ static void cbd2(mlkem_poly *r, const uint8_t buf[2*KYBER_N/4])
   }
 }
 
-/*************************************************
-* Name:        cbd3
-*
-* Description: Given an array of uniformly random bytes, compute
-*              polynomial with coefficients distributed according to
-*              a centered binomial distribution with parameter eta=3.
-*              This function is only needed for Kyber-512
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const uint8_t *buf: pointer to input byte array
-**************************************************/
+
 #if KYBER_ETA1 == 3
 static void cbd3(mlkem_poly *r, const uint8_t buf[3*KYBER_N/4])
 {
@@ -1279,16 +949,7 @@ static void mlkem_poly_cbd_eta2(mlkem_poly *r, const uint8_t buf[KYBER_ETA2*KYBE
 #endif
 }
 
-// ----- mlkem/poly.c -----
-/*************************************************
-* Name:        mlkem_poly_compress
-*
-* Description: Compression and subsequent serialization of a polynomial
-*
-* Arguments:   - uint8_t *r: pointer to output byte array
-*                            (of length KYBER_POLYCOMPRESSEDBYTES)
-*              - const mlkem_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mlkem_poly_compress(uint8_t r[KYBER_POLYCOMPRESSEDBYTES], const mlkem_poly *a)
 {
   unsigned int i,j;
@@ -1300,10 +961,10 @@ static void mlkem_poly_compress(uint8_t r[KYBER_POLYCOMPRESSEDBYTES], const mlke
 
   for(i=0;i<KYBER_N/8;i++) {
     for(j=0;j<8;j++) {
-      // map to positive standard representatives
+      // Move into the standard representative range.
       u  = a->coeffs[8*i+j];
       u += (u >> 15) & KYBER_Q;
-/*    t[j] = ((((uint16_t)u << 4) + KYBER_Q/2)/KYBER_Q) & 15; */
+
       d0 = u << 4;
       d0 += 1665;
       d0 *= 80635;
@@ -1320,10 +981,10 @@ static void mlkem_poly_compress(uint8_t r[KYBER_POLYCOMPRESSEDBYTES], const mlke
 #elif (KYBER_POLYCOMPRESSEDBYTES == 160)
   for(i=0;i<KYBER_N/8;i++) {
     for(j=0;j<8;j++) {
-      // map to positive standard representatives
+      // Move into the standard representative range.
       u  = a->coeffs[8*i+j];
       u += (u >> 15) & KYBER_Q;
-/*    t[j] = ((((uint32_t)u << 5) + KYBER_Q/2)/KYBER_Q) & 31; */
+
       d0 = u << 5;
       d0 += 1664;
       d0 *= 40318;
@@ -1343,16 +1004,7 @@ static void mlkem_poly_compress(uint8_t r[KYBER_POLYCOMPRESSEDBYTES], const mlke
 #endif
 }
 
-/*************************************************
-* Name:        mlkem_poly_decompress
-*
-* Description: De-serialization and subsequent decompression of a polynomial;
-*              approximate inverse of mlkem_poly_compress
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const uint8_t *a: pointer to input byte array
-*                                  (of length KYBER_POLYCOMPRESSEDBYTES bytes)
-**************************************************/
+
 static void mlkem_poly_decompress(mlkem_poly *r, const uint8_t a[KYBER_POLYCOMPRESSEDBYTES])
 {
   unsigned int i;
@@ -1385,22 +1037,14 @@ static void mlkem_poly_decompress(mlkem_poly *r, const uint8_t a[KYBER_POLYCOMPR
 #endif
 }
 
-/*************************************************
-* Name:        mlkem_poly_tobytes
-*
-* Description: Serialization of a polynomial
-*
-* Arguments:   - uint8_t *r: pointer to output byte array
-*                            (needs space for KYBER_POLYBYTES bytes)
-*              - const mlkem_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mlkem_poly_tobytes(uint8_t r[KYBER_POLYBYTES], const mlkem_poly *a)
 {
   unsigned int i;
   uint16_t t0, t1;
 
   for(i=0;i<KYBER_N/2;i++) {
-    // map to positive standard representatives
+    // Move into the standard representative range.
     t0  = a->coeffs[2*i];
     t0 += ((int16_t)t0 >> 15) & KYBER_Q;
     t1 = a->coeffs[2*i+1];
@@ -1411,16 +1055,7 @@ static void mlkem_poly_tobytes(uint8_t r[KYBER_POLYBYTES], const mlkem_poly *a)
   }
 }
 
-/*************************************************
-* Name:        mlkem_poly_frombytes
-*
-* Description: De-serialization of a polynomial;
-*              inverse of mlkem_poly_tobytes
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const uint8_t *a: pointer to input byte array
-*                                  (of KYBER_POLYBYTES bytes)
-**************************************************/
+
 static void mlkem_poly_frombytes(mlkem_poly *r, const uint8_t a[KYBER_POLYBYTES])
 {
   unsigned int i;
@@ -1430,14 +1065,7 @@ static void mlkem_poly_frombytes(mlkem_poly *r, const uint8_t a[KYBER_POLYBYTES]
   }
 }
 
-/*************************************************
-* Name:        mlkem_poly_frommsg
-*
-* Description: Convert 32-byte message to polynomial
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const uint8_t *msg: pointer to input message
-**************************************************/
+
 static void mlkem_poly_frommsg(mlkem_poly *r, const uint8_t msg[KYBER_INDCPA_MSGBYTES])
 {
   unsigned int i,j;
@@ -1454,14 +1082,7 @@ static void mlkem_poly_frommsg(mlkem_poly *r, const uint8_t msg[KYBER_INDCPA_MSG
   }
 }
 
-/*************************************************
-* Name:        mlkem_poly_tomsg
-*
-* Description: Convert polynomial to 32-byte message
-*
-* Arguments:   - uint8_t *msg: pointer to output message
-*              - const mlkem_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mlkem_poly_tomsg(uint8_t msg[KYBER_INDCPA_MSGBYTES], const mlkem_poly *a)
 {
   unsigned int i,j;
@@ -1471,8 +1092,6 @@ static void mlkem_poly_tomsg(uint8_t msg[KYBER_INDCPA_MSGBYTES], const mlkem_pol
     msg[i] = 0;
     for(j=0;j<8;j++) {
       t  = a->coeffs[8*i+j];
-      // t += ((int16_t)t >> 15) & KYBER_Q;
-      // t  = (((t << 1) + KYBER_Q/2)/KYBER_Q) & 1;
       t <<= 1;
       t += 1665;
       t *= 80635;
@@ -1483,18 +1102,7 @@ static void mlkem_poly_tomsg(uint8_t msg[KYBER_INDCPA_MSGBYTES], const mlkem_pol
   }
 }
 
-/*************************************************
-* Name:        mlkem_poly_getnoise_eta1
-*
-* Description: Sample a polynomial deterministically from a seed and a nonce,
-*              with output polynomial close to centered binomial distribution
-*              with parameter KYBER_ETA1
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const uint8_t *seed: pointer to input seed
-*                                     (of length KYBER_SYMBYTES bytes)
-*              - uint8_t nonce: one-byte input nonce
-**************************************************/
+
 static void mlkem_poly_getnoise_eta1(mlkem_poly *r, const uint8_t seed[KYBER_SYMBYTES], uint8_t nonce)
 {
   uint8_t buf[KYBER_ETA1*KYBER_N/4];
@@ -1502,18 +1110,7 @@ static void mlkem_poly_getnoise_eta1(mlkem_poly *r, const uint8_t seed[KYBER_SYM
   mlkem_poly_cbd_eta1(r, buf);
 }
 
-/*************************************************
-* Name:        mlkem_poly_getnoise_eta2
-*
-* Description: Sample a polynomial deterministically from a seed and a nonce,
-*              with output polynomial close to centered binomial distribution
-*              with parameter KYBER_ETA2
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const uint8_t *seed: pointer to input seed
-*                                     (of length KYBER_SYMBYTES bytes)
-*              - uint8_t nonce: one-byte input nonce
-**************************************************/
+
 static void mlkem_poly_getnoise_eta2(mlkem_poly *r, const uint8_t seed[KYBER_SYMBYTES], uint8_t nonce)
 {
   uint8_t buf[KYBER_ETA2*KYBER_N/4];
@@ -1522,44 +1119,19 @@ static void mlkem_poly_getnoise_eta2(mlkem_poly *r, const uint8_t seed[KYBER_SYM
 }
 
 
-/*************************************************
-* Name:        mlkem_poly_ntt
-*
-* Description: Computes negacyclic number-theoretic transform (NTT) of
-*              a polynomial in place;
-*              inputs assumed to be in normal order, output in bitreversed order
-*
-* Arguments:   - uint16_t *r: pointer to in/output polynomial
-**************************************************/
 static void mlkem_poly_ntt(mlkem_poly *r)
 {
   mlkem_ntt(r->coeffs);
   mlkem_poly_reduce(r);
 }
 
-/*************************************************
-* Name:        mlkem_poly_invntt_tomont
-*
-* Description: Computes inverse of negacyclic number-theoretic transform (NTT)
-*              of a polynomial in place;
-*              inputs assumed to be in bitreversed order, output in normal order
-*
-* Arguments:   - uint16_t *a: pointer to in/output polynomial
-**************************************************/
+
 static void mlkem_poly_invntt_tomont(mlkem_poly *r)
 {
   mlkem_invntt(r->coeffs);
 }
 
-/*************************************************
-* Name:        mlkem_poly_basemul_montgomery
-*
-* Description: Multiplication of two polynomials in NTT domain
-*
-* Arguments:   - mlkem_poly *r: pointer to output polynomial
-*              - const mlkem_poly *a: pointer to first input polynomial
-*              - const mlkem_poly *b: pointer to second input polynomial
-**************************************************/
+
 static void mlkem_poly_basemul_montgomery(mlkem_poly *r, const mlkem_poly *a, const mlkem_poly *b)
 {
   unsigned int i;
@@ -1569,14 +1141,7 @@ static void mlkem_poly_basemul_montgomery(mlkem_poly *r, const mlkem_poly *a, co
   }
 }
 
-/*************************************************
-* Name:        mlkem_poly_tomont
-*
-* Description: Inplace conversion of all coefficients of a polynomial
-*              from normal domain to Montgomery domain
-*
-* Arguments:   - mlkem_poly *r: pointer to input/output polynomial
-**************************************************/
+
 static void mlkem_poly_tomont(mlkem_poly *r)
 {
   unsigned int i;
@@ -1585,14 +1150,7 @@ static void mlkem_poly_tomont(mlkem_poly *r)
     r->coeffs[i] = mlkem_montgomery_reduce((int32_t)r->coeffs[i]*f);
 }
 
-/*************************************************
-* Name:        mlkem_poly_reduce
-*
-* Description: Applies Barrett reduction to all coefficients of a polynomial
-*              for details of the Barrett reduction see comments in reduce.c
-*
-* Arguments:   - mlkem_poly *r: pointer to input/output polynomial
-**************************************************/
+
 static void mlkem_poly_reduce(mlkem_poly *r)
 {
   unsigned int i;
@@ -1600,15 +1158,7 @@ static void mlkem_poly_reduce(mlkem_poly *r)
     r->coeffs[i] = mlkem_barrett_reduce(r->coeffs[i]);
 }
 
-/*************************************************
-* Name:        mlkem_poly_add
-*
-* Description: Add two polynomials; no modular reduction is performed
-*
-* Arguments: - mlkem_poly *r: pointer to output polynomial
-*            - const mlkem_poly *a: pointer to first input polynomial
-*            - const mlkem_poly *b: pointer to second input polynomial
-**************************************************/
+
 static void mlkem_poly_add(mlkem_poly *r, const mlkem_poly *a, const mlkem_poly *b)
 {
   unsigned int i;
@@ -1616,15 +1166,7 @@ static void mlkem_poly_add(mlkem_poly *r, const mlkem_poly *a, const mlkem_poly 
     r->coeffs[i] = a->coeffs[i] + b->coeffs[i];
 }
 
-/*************************************************
-* Name:        mlkem_poly_sub
-*
-* Description: Subtract two polynomials; no modular reduction is performed
-*
-* Arguments: - mlkem_poly *r:       pointer to output polynomial
-*            - const mlkem_poly *a: pointer to first input polynomial
-*            - const mlkem_poly *b: pointer to second input polynomial
-**************************************************/
+
 static void mlkem_poly_sub(mlkem_poly *r, const mlkem_poly *a, const mlkem_poly *b)
 {
   unsigned int i;
@@ -1632,16 +1174,7 @@ static void mlkem_poly_sub(mlkem_poly *r, const mlkem_poly *a, const mlkem_poly 
     r->coeffs[i] = a->coeffs[i] - b->coeffs[i];
 }
 
-// ----- mlkem/polyvec.c -----
-/*************************************************
-* Name:        mlkem_polyvec_compress
-*
-* Description: Compress and serialize vector of polynomials
-*
-* Arguments:   - uint8_t *r: pointer to output byte array
-*                            (needs space for KYBER_POLYVECCOMPRESSEDBYTES)
-*              - const mlkem_polyvec *a: pointer to input vector of polynomials
-**************************************************/
+
 static void mlkem_polyvec_compress(uint8_t r[KYBER_POLYVECCOMPRESSEDBYTES], const mlkem_polyvec *a)
 {
   unsigned int i,j,k;
@@ -1654,7 +1187,7 @@ static void mlkem_polyvec_compress(uint8_t r[KYBER_POLYVECCOMPRESSEDBYTES], cons
       for(k=0;k<8;k++) {
         t[k]  = a->vec[i].coeffs[8*j+k];
         t[k] += ((int16_t)t[k] >> 15) & KYBER_Q;
-/*      t[k]  = ((((uint32_t)t[k] << 11) + KYBER_Q/2)/KYBER_Q) & 0x7ff; */
+
         d0 = t[k];
         d0 <<= 11;
         d0 += 1664;
@@ -1685,7 +1218,7 @@ static void mlkem_polyvec_compress(uint8_t r[KYBER_POLYVECCOMPRESSEDBYTES], cons
       for(k=0;k<4;k++) {
         t[k]  = a->vec[i].coeffs[4*j+k];
         t[k] += ((int16_t)t[k] >> 15) & KYBER_Q;
-/*      t[k]  = ((((uint32_t)t[k] << 10) + KYBER_Q/2)/ KYBER_Q) & 0x3ff; */
+
         d0 = t[k];
         d0 <<= 10;
         d0 += 1665;
@@ -1707,16 +1240,7 @@ static void mlkem_polyvec_compress(uint8_t r[KYBER_POLYVECCOMPRESSEDBYTES], cons
 #endif
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_decompress
-*
-* Description: De-serialize and decompress vector of polynomials;
-*              approximate inverse of mlkem_polyvec_compress
-*
-* Arguments:   - mlkem_polyvec *r:       pointer to output vector of polynomials
-*              - const uint8_t *a: pointer to input byte array
-*                                  (of length KYBER_POLYVECCOMPRESSEDBYTES)
-**************************************************/
+
 static void mlkem_polyvec_decompress(mlkem_polyvec *r, const uint8_t a[KYBER_POLYVECCOMPRESSEDBYTES])
 {
   unsigned int i,j,k;
@@ -1758,15 +1282,7 @@ static void mlkem_polyvec_decompress(mlkem_polyvec *r, const uint8_t a[KYBER_POL
 #endif
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_tobytes
-*
-* Description: Serialize vector of polynomials
-*
-* Arguments:   - uint8_t *r: pointer to output byte array
-*                            (needs space for KYBER_POLYVECBYTES)
-*              - const mlkem_polyvec *a: pointer to input vector of polynomials
-**************************************************/
+
 static void mlkem_polyvec_tobytes(uint8_t r[KYBER_POLYVECBYTES], const mlkem_polyvec *a)
 {
   unsigned int i;
@@ -1774,16 +1290,7 @@ static void mlkem_polyvec_tobytes(uint8_t r[KYBER_POLYVECBYTES], const mlkem_pol
     mlkem_poly_tobytes(r+i*KYBER_POLYBYTES, &a->vec[i]);
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_frombytes
-*
-* Description: De-serialize vector of polynomials;
-*              inverse of mlkem_polyvec_tobytes
-*
-* Arguments:   - uint8_t *r:       pointer to output byte array
-*              - const mlkem_polyvec *a: pointer to input vector of polynomials
-*                                  (of length KYBER_POLYVECBYTES)
-**************************************************/
+
 static void mlkem_polyvec_frombytes(mlkem_polyvec *r, const uint8_t a[KYBER_POLYVECBYTES])
 {
   unsigned int i;
@@ -1791,13 +1298,7 @@ static void mlkem_polyvec_frombytes(mlkem_polyvec *r, const uint8_t a[KYBER_POLY
     mlkem_poly_frombytes(&r->vec[i], a+i*KYBER_POLYBYTES);
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_ntt
-*
-* Description: Apply forward NTT to all elements of a vector of polynomials
-*
-* Arguments:   - mlkem_polyvec *r: pointer to in/output vector of polynomials
-**************************************************/
+
 static void mlkem_polyvec_ntt(mlkem_polyvec *r)
 {
   unsigned int i;
@@ -1805,14 +1306,7 @@ static void mlkem_polyvec_ntt(mlkem_polyvec *r)
     mlkem_poly_ntt(&r->vec[i]);
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_invntt_tomont
-*
-* Description: Apply inverse NTT to all elements of a vector of polynomials
-*              and multiply by Montgomery factor 2^16
-*
-* Arguments:   - mlkem_polyvec *r: pointer to in/output vector of polynomials
-**************************************************/
+
 static void mlkem_polyvec_invntt_tomont(mlkem_polyvec *r)
 {
   unsigned int i;
@@ -1820,16 +1314,7 @@ static void mlkem_polyvec_invntt_tomont(mlkem_polyvec *r)
     mlkem_poly_invntt_tomont(&r->vec[i]);
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_basemul_acc_montgomery
-*
-* Description: Multiply elements of a and b in NTT domain, accumulate into r,
-*              and multiply by 2^-16.
-*
-* Arguments: - mlkem_poly *r: pointer to output polynomial
-*            - const mlkem_polyvec *a: pointer to first input vector of polynomials
-*            - const mlkem_polyvec *b: pointer to second input vector of polynomials
-**************************************************/
+
 static void mlkem_polyvec_basemul_acc_montgomery(mlkem_poly *r, const mlkem_polyvec *a, const mlkem_polyvec *b)
 {
   unsigned int i;
@@ -1844,15 +1329,7 @@ static void mlkem_polyvec_basemul_acc_montgomery(mlkem_poly *r, const mlkem_poly
   mlkem_poly_reduce(r);
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_reduce
-*
-* Description: Applies Barrett reduction to each coefficient
-*              of each element of a vector of polynomials;
-*              for details of the Barrett reduction see comments in reduce.c
-*
-* Arguments:   - mlkem_polyvec *r: pointer to input/output polynomial
-**************************************************/
+
 static void mlkem_polyvec_reduce(mlkem_polyvec *r)
 {
   unsigned int i;
@@ -1860,15 +1337,7 @@ static void mlkem_polyvec_reduce(mlkem_polyvec *r)
     mlkem_poly_reduce(&r->vec[i]);
 }
 
-/*************************************************
-* Name:        mlkem_polyvec_add
-*
-* Description: Add vectors of polynomials
-*
-* Arguments: - mlkem_polyvec *r: pointer to output vector of polynomials
-*            - const mlkem_polyvec *a: pointer to first input vector of polynomials
-*            - const mlkem_polyvec *b: pointer to second input vector of polynomials
-**************************************************/
+
 static void mlkem_polyvec_add(mlkem_polyvec *r, const mlkem_polyvec *a, const mlkem_polyvec *b)
 {
   unsigned int i;
@@ -1876,18 +1345,7 @@ static void mlkem_polyvec_add(mlkem_polyvec *r, const mlkem_polyvec *a, const ml
     mlkem_poly_add(&r->vec[i], &a->vec[i], &b->vec[i]);
 }
 
-// ----- mlkem/verify.c -----
-/*************************************************
-* Name:        mlkem_verify
-*
-* Description: Compare two arrays for equality in constant time.
-*
-* Arguments:   const uint8_t *a: pointer to first byte array
-*              const uint8_t *b: pointer to second byte array
-*              size_t len:       length of the byte arrays
-*
-* Returns 0 if the byte arrays are equal, 1 otherwise
-**************************************************/
+
 static int mlkem_verify(const uint8_t *a, const uint8_t *b, size_t len)
 {
   size_t i;
@@ -1899,19 +1357,7 @@ static int mlkem_verify(const uint8_t *a, const uint8_t *b, size_t len)
   return (-(uint64_t)r) >> 63;
 }
 
-/*************************************************
-* Name:        mlkem_cmov
-*
-* Description: Copy len bytes from x to r if b is 1;
-*              don't modify x if b is 0. Requires b to be in {0,1};
-*              assumes two's complement representation of negative integers.
-*              Runs in constant time.
-*
-* Arguments:   uint8_t *r:       pointer to output byte array
-*              const uint8_t *x: pointer to input byte array
-*              size_t len:       Amount of bytes to be copied
-*              uint8_t b:        Condition bit; has to be in {0,1}
-**************************************************/
+
 static void mlkem_cmov(uint8_t *r, const uint8_t *x, size_t len, uint8_t b)
 {
   size_t i;
@@ -1922,34 +1368,13 @@ static void mlkem_cmov(uint8_t *r, const uint8_t *x, size_t len, uint8_t b)
 }
 
 
-/*************************************************
-* Name:        mlkem_cmov_int16
-*
-* Description: Copy input v to *r if b is 1, don't modify *r if b is 0. 
-*              Requires b to be in {0,1};
-*              Runs in constant time.
-*
-* Arguments:   int16_t *r:       pointer to output int16_t
-*              int16_t v:        input int16_t 
-*              uint8_t b:        Condition bit; has to be in {0,1}
-**************************************************/
 static void mlkem_cmov_int16(int16_t *r, int16_t v, uint16_t b)
 {
   b = -b;
   *r ^= b & ((*r) ^ v);
 }
 
-// ----- mlkem/symmetric-shake.c -----
-/*************************************************
-* Name:        mlkem_shake128_absorb
-*
-* Description: Absorb step of the SHAKE128 specialized for the Kyber context.
-*
-* Arguments:   - keccak_state *state: pointer to (uninitialized) output Keccak state
-*              - const uint8_t *seed: pointer to KYBER_SYMBYTES input to be absorbed into state
-*              - uint8_t i: additional byte of input
-*              - uint8_t j: additional byte of input
-**************************************************/
+
 static void mlkem_shake128_absorb(keccak_state *state,
                            const uint8_t seed[KYBER_SYMBYTES],
                            uint8_t x,
@@ -1964,17 +1389,7 @@ static void mlkem_shake128_absorb(keccak_state *state,
   shake128_absorb_once(state, extseed, sizeof(extseed));
 }
 
-/*************************************************
-* Name:        mlkem_shake256_prf
-*
-* Description: Usage of SHAKE256 as a PRF, concatenates secret and public input
-*              and then generates outlen bytes of SHAKE256 output
-*
-* Arguments:   - uint8_t *out: pointer to output
-*              - size_t outlen: number of requested output bytes
-*              - const uint8_t *key: pointer to the key (of length KYBER_SYMBYTES)
-*              - uint8_t nonce: single-byte nonce (public PRF input)
-**************************************************/
+
 static void mlkem_shake256_prf(uint8_t *out, size_t outlen, const uint8_t key[KYBER_SYMBYTES], uint8_t nonce)
 {
   uint8_t extkey[KYBER_SYMBYTES+1];
@@ -1985,17 +1400,7 @@ static void mlkem_shake256_prf(uint8_t *out, size_t outlen, const uint8_t key[KY
   shake256(out, outlen, extkey, sizeof(extkey));
 }
 
-/*************************************************
-* Name:        mlkem_shake256_prf
-*
-* Description: Usage of SHAKE256 as a PRF, concatenates secret and public input
-*              and then generates outlen bytes of SHAKE256 output
-*
-* Arguments:   - uint8_t *out: pointer to output
-*              - size_t outlen: number of requested output bytes
-*              - const uint8_t *key: pointer to the key (of length KYBER_SYMBYTES)
-*              - uint8_t nonce: single-byte nonce (public PRF input)
-**************************************************/
+
 static void mlkem_shake256_rkprf(uint8_t out[KYBER_SSBYTES], const uint8_t key[KYBER_SYMBYTES], const uint8_t input[KYBER_CIPHERTEXTBYTES])
 {
   keccak_state s;
@@ -2007,18 +1412,7 @@ static void mlkem_shake256_rkprf(uint8_t out[KYBER_SSBYTES], const uint8_t key[K
   shake256_squeeze(out, KYBER_SSBYTES, &s);
 }
 
-// ----- mlkem/indcpa.c -----
-/*************************************************
-* Name:        pack_pk
-*
-* Description: Serialize the public key as concatenation of the
-*              serialized vector of polynomials pk
-*              and the public seed used to generate the matrix A.
-*
-* Arguments:   uint8_t *r: pointer to the output serialized public key
-*              mlkem_polyvec *pk: pointer to the input public-key mlkem_polyvec
-*              const uint8_t *seed: pointer to the input public seed
-**************************************************/
+
 static void pack_pk(uint8_t r[KYBER_INDCPA_PUBLICKEYBYTES],
                     mlkem_polyvec *pk,
                     const uint8_t seed[KYBER_SYMBYTES])
@@ -2027,16 +1421,7 @@ static void pack_pk(uint8_t r[KYBER_INDCPA_PUBLICKEYBYTES],
   memcpy(r+KYBER_POLYVECBYTES, seed, KYBER_SYMBYTES);
 }
 
-/*************************************************
-* Name:        unpack_pk
-*
-* Description: De-serialize public key from a byte array;
-*              approximate inverse of pack_pk
-*
-* Arguments:   - mlkem_polyvec *pk: pointer to output public-key polynomial vector
-*              - uint8_t *seed: pointer to output seed to generate matrix A
-*              - const uint8_t *packedpk: pointer to input serialized public key
-**************************************************/
+
 static void unpack_pk(mlkem_polyvec *pk,
                       uint8_t seed[KYBER_SYMBYTES],
                       const uint8_t packedpk[KYBER_INDCPA_PUBLICKEYBYTES])
@@ -2045,78 +1430,33 @@ static void unpack_pk(mlkem_polyvec *pk,
   memcpy(seed, packedpk+KYBER_POLYVECBYTES, KYBER_SYMBYTES);
 }
 
-/*************************************************
-* Name:        pack_sk
-*
-* Description: Serialize the secret key
-*
-* Arguments:   - uint8_t *r: pointer to output serialized secret key
-*              - mlkem_polyvec *sk: pointer to input vector of polynomials (secret key)
-**************************************************/
+
 static void pack_sk(uint8_t r[KYBER_INDCPA_SECRETKEYBYTES], mlkem_polyvec *sk)
 {
   mlkem_polyvec_tobytes(r, sk);
 }
 
-/*************************************************
-* Name:        unpack_sk
-*
-* Description: De-serialize the secret key; inverse of pack_sk
-*
-* Arguments:   - mlkem_polyvec *sk: pointer to output vector of polynomials (secret key)
-*              - const uint8_t *packedsk: pointer to input serialized secret key
-**************************************************/
+
 static void unpack_sk(mlkem_polyvec *sk, const uint8_t packedsk[KYBER_INDCPA_SECRETKEYBYTES])
 {
   mlkem_polyvec_frombytes(sk, packedsk);
 }
 
-/*************************************************
-* Name:        pack_ciphertext
-*
-* Description: Serialize the ciphertext as concatenation of the
-*              compressed and serialized vector of polynomials b
-*              and the compressed and serialized polynomial v
-*
-* Arguments:   uint8_t *r: pointer to the output serialized ciphertext
-*              mlkem_poly *pk: pointer to the input vector of polynomials b
-*              mlkem_poly *v: pointer to the input polynomial v
-**************************************************/
+
 static void pack_ciphertext(uint8_t r[KYBER_INDCPA_BYTES], mlkem_polyvec *b, mlkem_poly *v)
 {
   mlkem_polyvec_compress(r, b);
   mlkem_poly_compress(r+KYBER_POLYVECCOMPRESSEDBYTES, v);
 }
 
-/*************************************************
-* Name:        unpack_ciphertext
-*
-* Description: De-serialize and decompress ciphertext from a byte array;
-*              approximate inverse of pack_ciphertext
-*
-* Arguments:   - mlkem_polyvec *b: pointer to the output vector of polynomials b
-*              - mlkem_poly *v: pointer to the output polynomial v
-*              - const uint8_t *c: pointer to the input serialized ciphertext
-**************************************************/
+
 static void unpack_ciphertext(mlkem_polyvec *b, mlkem_poly *v, const uint8_t c[KYBER_INDCPA_BYTES])
 {
   mlkem_polyvec_decompress(b, c);
   mlkem_poly_decompress(v, c+KYBER_POLYVECCOMPRESSEDBYTES);
 }
 
-/*************************************************
-* Name:        mlkem_rej_uniform
-*
-* Description: Run rejection sampling on uniform random bytes to generate
-*              uniform random integers mod q
-*
-* Arguments:   - int16_t *r: pointer to output buffer
-*              - unsigned int len: requested number of 16-bit integers (uniform mod q)
-*              - const uint8_t *buf: pointer to input buffer (assumed to be uniformly random bytes)
-*              - unsigned int buflen: length of input buffer in bytes
-*
-* Returns number of sampled 16-bit integers (at most len)
-**************************************************/
+
 static unsigned int mlkem_rej_uniform(int16_t *r,
                                 unsigned int len,
                                 const uint8_t *buf,
@@ -2143,24 +1483,13 @@ static unsigned int mlkem_rej_uniform(int16_t *r,
 #define gen_a(A,B)  mlkem_gen_matrix(A,B,0)
 #define gen_at(A,B) mlkem_gen_matrix(A,B,1)
 
-/*************************************************
-* Name:        mlkem_gen_matrix
-*
-* Description: Deterministically generate matrix A (or the transpose of A)
-*              from a seed. Entries of the matrix are polynomials that look
-*              uniformly random. Performs rejection sampling on output of
-*              a XOF
-*
-* Arguments:   - mlkem_polyvec *a: pointer to ouptput matrix A
-*              - const uint8_t *seed: pointer to input seed
-*              - int transposed: boolean deciding whether A or A^T is generated
-**************************************************/
+
 #if(XOF_BLOCKBYTES % 3)
 #error "Implementation of mlkem_gen_matrix assumes that XOF_BLOCKBYTES is a multiple of 3"
 #endif
 
 #define GEN_MATRIX_NBLOCKS ((12*KYBER_N/8*(1 << 12)/KYBER_Q + XOF_BLOCKBYTES)/XOF_BLOCKBYTES)
-// Not static for benchmarking
+// Matrix generation is private to this translation unit.
 static void mlkem_gen_matrix(mlkem_polyvec *a, const uint8_t seed[KYBER_SYMBYTES], int transposed)
 {
   unsigned int ctr, i, j;
@@ -2188,19 +1517,7 @@ static void mlkem_gen_matrix(mlkem_polyvec *a, const uint8_t seed[KYBER_SYMBYTES
   }
 }
 
-/*************************************************
-* Name:        mlkem_indcpa_keypair_derand
-*
-* Description: Generates public and private key for the CPA-secure
-*              public-key encryption scheme underlying Kyber
-*
-* Arguments:   - uint8_t *pk: pointer to output public key
-*                             (of length KYBER_INDCPA_PUBLICKEYBYTES bytes)
-*              - uint8_t *sk: pointer to output private key
-*                             (of length KYBER_INDCPA_SECRETKEYBYTES bytes)
-*              - const uint8_t *coins: pointer to input randomness
-*                             (of length KYBER_SYMBYTES bytes)
-**************************************************/
+
 static void mlkem_indcpa_keypair_derand(uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES],
                            uint8_t sk[KYBER_INDCPA_SECRETKEYBYTES],
                            const uint8_t coins[KYBER_SYMBYTES])
@@ -2226,7 +1543,7 @@ static void mlkem_indcpa_keypair_derand(uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES],
   mlkem_polyvec_ntt(&skpv);
   mlkem_polyvec_ntt(&e);
 
-  // matrix-vector multiplication
+  // Compute the matrix-vector product.
   for(i=0;i<KYBER_K;i++) {
     mlkem_polyvec_basemul_acc_montgomery(&pkpv.vec[i], &a[i], &skpv);
     mlkem_poly_tomont(&pkpv.vec[i]);
@@ -2244,22 +1561,6 @@ static void mlkem_indcpa_keypair_derand(uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES],
 }
 
 
-/*************************************************
-* Name:        mlkem_indcpa_enc
-*
-* Description: Encryption function of the CPA-secure
-*              public-key encryption scheme underlying Kyber.
-*
-* Arguments:   - uint8_t *c: pointer to output ciphertext
-*                            (of length KYBER_INDCPA_BYTES bytes)
-*              - const uint8_t *m: pointer to input message
-*                                  (of length KYBER_INDCPA_MSGBYTES bytes)
-*              - const uint8_t *pk: pointer to input public key
-*                                   (of length KYBER_INDCPA_PUBLICKEYBYTES)
-*              - const uint8_t *coins: pointer to input random coins used as seed
-*                                      (of length KYBER_SYMBYTES) to deterministically
-*                                      generate all randomness
-**************************************************/
 static void mlkem_indcpa_enc(uint8_t c[KYBER_INDCPA_BYTES],
                 const uint8_t m[KYBER_INDCPA_MSGBYTES],
                 const uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES],
@@ -2283,7 +1584,7 @@ static void mlkem_indcpa_enc(uint8_t c[KYBER_INDCPA_BYTES],
 
   mlkem_polyvec_ntt(&sp);
 
-  // matrix-vector multiplication
+  // Compute the matrix-vector product.
   for(i=0;i<KYBER_K;i++)
     mlkem_polyvec_basemul_acc_montgomery(&b.vec[i], &at[i], &sp);
 
@@ -2307,19 +1608,7 @@ static void mlkem_indcpa_enc(uint8_t c[KYBER_INDCPA_BYTES],
   ncrypt_wipe(&v,   sizeof v);
 }
 
-/*************************************************
-* Name:        mlkem_indcpa_dec
-*
-* Description: Decryption function of the CPA-secure
-*              public-key encryption scheme underlying Kyber.
-*
-* Arguments:   - uint8_t *m: pointer to output decrypted message
-*                            (of length KYBER_INDCPA_MSGBYTES)
-*              - const uint8_t *c: pointer to input ciphertext
-*                                  (of length KYBER_INDCPA_BYTES)
-*              - const uint8_t *sk: pointer to input secret key
-*                                   (of length KYBER_INDCPA_SECRETKEYBYTES)
-**************************************************/
+
 static void mlkem_indcpa_dec(uint8_t m[KYBER_INDCPA_MSGBYTES],
                 const uint8_t c[KYBER_INDCPA_BYTES],
                 const uint8_t sk[KYBER_INDCPA_SECRETKEYBYTES])
@@ -2344,22 +1633,7 @@ static void mlkem_indcpa_dec(uint8_t m[KYBER_INDCPA_MSGBYTES],
   ncrypt_wipe(&v,    sizeof v);
 }
 
-// ----- mlkem/kem.c -----
-/*************************************************
-* Name:        mlkem_keypair_derand
-*
-* Description: Generates public and private key
-*              for CCA-secure Kyber key encapsulation mechanism
-*
-* Arguments:   - uint8_t *pk: pointer to output public key
-*                (an already allocated array of KYBER_PUBLICKEYBYTES bytes)
-*              - uint8_t *sk: pointer to output private key
-*                (an already allocated array of KYBER_SECRETKEYBYTES bytes)
-*              - uint8_t *coins: pointer to input randomness
-*                (an already allocated array filled with 2*KYBER_SYMBYTES random bytes)
-**
-* Returns 0 (success)
-**************************************************/
+
 static int mlkem_keypair_derand(uint8_t *pk,
                               uint8_t *sk,
                               const uint8_t *coins)
@@ -2367,45 +1641,28 @@ static int mlkem_keypair_derand(uint8_t *pk,
   mlkem_indcpa_keypair_derand(pk, sk, coins);
   memcpy(sk+KYBER_INDCPA_SECRETKEYBYTES, pk, KYBER_PUBLICKEYBYTES);
   hash_h(sk+KYBER_SECRETKEYBYTES-2*KYBER_SYMBYTES, pk, KYBER_PUBLICKEYBYTES);
-  /* Value z for pseudo-random output on reject */
+  // Rejection value from the key.
   memcpy(sk+KYBER_SECRETKEYBYTES-KYBER_SYMBYTES, coins+KYBER_SYMBYTES, KYBER_SYMBYTES);
   return 0;
 }
 
 
-/*************************************************
-* Name:        mlkem_enc_derand
-*
-* Description: Generates cipher text and shared
-*              secret for given public key
-*
-* Arguments:   - uint8_t *ct: pointer to output cipher text
-*                (an already allocated array of KYBER_CIPHERTEXTBYTES bytes)
-*              - uint8_t *ss: pointer to output shared secret
-*                (an already allocated array of KYBER_SSBYTES bytes)
-*              - const uint8_t *pk: pointer to input public key
-*                (an already allocated array of KYBER_PUBLICKEYBYTES bytes)
-*              - const uint8_t *coins: pointer to input randomness
-*                (an already allocated array filled with KYBER_SYMBYTES random bytes)
-**
-* Returns 0 (success)
-**************************************************/
 static int mlkem_enc_derand(uint8_t *ct,
                           uint8_t *ss,
                           const uint8_t *pk,
                           const uint8_t *coins)
 {
   uint8_t buf[2*KYBER_SYMBYTES];
-  /* Will contain key, coins */
+  // Buffer for the shared key and coins.
   uint8_t kr[2*KYBER_SYMBYTES];
 
   memcpy(buf, coins, KYBER_SYMBYTES);
 
-  /* Multitarget countermeasure for coins + contributory KEM */
+  // Bind the coins to the public key.
   hash_h(buf+KYBER_SYMBYTES, pk, KYBER_PUBLICKEYBYTES);
   hash_g(kr, buf, 2*KYBER_SYMBYTES);
 
-  /* coins are in kr+KYBER_SYMBYTES */
+  // The coins follow the first 32 bytes of kr.
   mlkem_indcpa_enc(ct, buf, pk, kr+KYBER_SYMBYTES);
 
   memcpy(ss,kr,KYBER_SYMBYTES);
@@ -2415,49 +1672,32 @@ static int mlkem_enc_derand(uint8_t *ct,
 }
 
 
-/*************************************************
-* Name:        mlkem_dec
-*
-* Description: Generates shared secret for given
-*              cipher text and private key
-*
-* Arguments:   - uint8_t *ss: pointer to output shared secret
-*                (an already allocated array of KYBER_SSBYTES bytes)
-*              - const uint8_t *ct: pointer to input cipher text
-*                (an already allocated array of KYBER_CIPHERTEXTBYTES bytes)
-*              - const uint8_t *sk: pointer to input private key
-*                (an already allocated array of KYBER_SECRETKEYBYTES bytes)
-*
-* Returns 0.
-*
-* On failure, ss will contain a pseudo-random value.
-**************************************************/
 static int mlkem_dec(uint8_t *ss,
                    const uint8_t *ct,
                    const uint8_t *sk)
 {
   int fail;
   uint8_t buf[2*KYBER_SYMBYTES];
-  /* Will contain key, coins */
+  // Buffer for the shared key and coins.
   uint8_t kr[2*KYBER_SYMBYTES];
   uint8_t cmp[KYBER_CIPHERTEXTBYTES+KYBER_SYMBYTES];
   const uint8_t *pk = sk+KYBER_INDCPA_SECRETKEYBYTES;
 
   mlkem_indcpa_dec(buf, ct, sk);
 
-  /* Multitarget countermeasure for coins + contributory KEM */
+  // Bind the coins to the public key.
   memcpy(buf+KYBER_SYMBYTES, sk+KYBER_SECRETKEYBYTES-2*KYBER_SYMBYTES, KYBER_SYMBYTES);
   hash_g(kr, buf, 2*KYBER_SYMBYTES);
 
-  /* coins are in kr+KYBER_SYMBYTES */
+  // The coins follow the first 32 bytes of kr.
   mlkem_indcpa_enc(cmp, buf, pk, kr+KYBER_SYMBYTES);
 
   fail = mlkem_verify(ct, cmp, KYBER_CIPHERTEXTBYTES);
 
-  /* Compute rejection key */
+  // Derive the rejection key.
   rkprf(ss,sk+KYBER_SECRETKEYBYTES-KYBER_SYMBYTES,ct);
 
-  /* Copy true key to return buffer if fail is false */
+  // Select the valid or rejection key.
   mlkem_cmov(ss,kr,KYBER_SYMBYTES,!fail);
 
   ncrypt_wipe(buf, sizeof buf);
@@ -2466,7 +1706,9 @@ static int mlkem_dec(uint8_t *ss,
   return 0;
 }
 
-// ----- mldsa/params.h -----
+//////////////
+/// ML-DSA ///
+//////////////
 #define MLDSA_SEEDBYTES 32
 #define MLDSA_CRHBYTES 64
 #define MLDSA_TRBYTES 64
@@ -2537,9 +1779,9 @@ static int mlkem_dec(uint8_t *ss,
 #define MLDSA_CRYPTO_SECRETKEYBYTES (2*MLDSA_SEEDBYTES + MLDSA_TRBYTES + MLDSA_L*MLDSA_POLYETA_PACKEDBYTES + MLDSA_K*MLDSA_POLYETA_PACKEDBYTES + MLDSA_K*MLDSA_POLYT0_PACKEDBYTES)
 #define MLDSA_CRYPTO_BYTES (MLDSA_CTILDEBYTES + MLDSA_L*MLDSA_POLYZ_PACKEDBYTES + MLDSA_POLYVECH_PACKEDBYTES)
 
-// ----- mldsa/reduce.h -----
-#define MLDSA_MONT -4186625 // 2^32 % MLDSA_Q
-#define MLDSA_QINV 58728449 // q^(-1) mod 2^32
+
+#define MLDSA_MONT -4186625 // Montgomery factor modulo q.
+#define MLDSA_QINV 58728449 // Negative modular inverse of q.
 
 static int32_t mldsa_montgomery_reduce(int64_t a);
 
@@ -2547,7 +1789,7 @@ static int32_t mldsa_reduce32(int32_t a);
 
 static int32_t mldsa_caddq(int32_t a);
 
-// ----- mldsa/rounding.h -----
+
 static int32_t mldsa_power2round(int32_t *a0, int32_t a);
 
 static int32_t mldsa_decompose(int32_t *a0, int32_t a);
@@ -2556,12 +1798,12 @@ static unsigned int mldsa_make_hint(int32_t a0, int32_t a1);
 
 static int32_t mldsa_use_hint(int32_t a, unsigned int hint);
 
-// ----- mldsa/ntt.h -----
+
 static void mldsa_ntt(int32_t a[MLDSA_N]);
 
 static void mldsa_invntt_tomont(int32_t a[MLDSA_N]);
 
-// ----- mldsa/poly.h -----
+
 typedef struct {
   int32_t coeffs[MLDSA_N];
 } mldsa_poly;
@@ -2608,8 +1850,8 @@ static void mldsa_polyz_unpack(mldsa_poly *r, const uint8_t *a);
 
 static void mldsa_polyw1_pack(uint8_t *r, const mldsa_poly *a);
 
-// ----- mldsa/polyvec.h -----
-/* Vectors of polynomials of length MLDSA_L */
+
+// Vector of MLDSA_L polynomials.
 typedef struct {
   mldsa_poly vec[MLDSA_L];
 } mldsa_polyvecl;
@@ -2633,8 +1875,7 @@ static void mldsa_polyvecl_pointwise_acc_montgomery(mldsa_poly *w,
 static int mldsa_polyvecl_chknorm(const mldsa_polyvecl *v, int32_t B);
 
 
-
-/* Vectors of polynomials of length MLDSA_K */
+// Vector of MLDSA_K polynomials.
 typedef struct {
   mldsa_poly vec[MLDSA_K];
 } mldsa_polyveck;
@@ -2667,7 +1908,7 @@ static void mldsa_polyvec_matrix_expand(mldsa_polyvecl mat[MLDSA_K], const uint8
 
 static void mldsa_polyvec_matrix_pointwise_montgomery(mldsa_polyveck *t, const mldsa_polyvecl mat[MLDSA_K], const mldsa_polyvecl *v);
 
-// ----- mldsa/packing.h -----
+
 static void mldsa_pack_pk(uint8_t pk[MLDSA_CRYPTO_PUBLICKEYBYTES], const uint8_t rho[MLDSA_SEEDBYTES], const mldsa_polyveck *t1);
 
 static void mldsa_pack_sk(uint8_t sk[MLDSA_CRYPTO_SECRETKEYBYTES],
@@ -2692,7 +1933,7 @@ static void mldsa_unpack_sk(uint8_t rho[MLDSA_SEEDBYTES],
 
 static int mldsa_unpack_sig(uint8_t c[MLDSA_CTILDEBYTES], mldsa_polyvecl *z, mldsa_polyveck *h, const uint8_t sig[MLDSA_CRYPTO_BYTES]);
 
-// ----- mldsa/symmetric.h -----
+
 typedef keccak_state mldsa_stream128_state;
 typedef keccak_state mldsa_stream256_state;
 
@@ -2712,7 +1953,7 @@ static void mldsa_shake256_stream_init(keccak_state *state,
 #define stream256_init(STATE, SEED, NONCE) mldsa_shake256_stream_init(STATE, SEED, NONCE)
 #define stream256_squeezeblocks(OUT, OUTBLOCKS, STATE) shake256_squeezeblocks(OUT, OUTBLOCKS, STATE)
 
-// ----- mldsa/sign.h -----
+
 static int mldsa_keypair_derand(uint8_t *pk, uint8_t *sk,
                                const uint8_t seed[MLDSA_SEEDBYTES]);
 
@@ -2743,17 +1984,7 @@ static int mldsa_verify(const uint8_t *sig, size_t siglen,
                        const uint8_t *ctx, size_t ctxlen,
                        const uint8_t *pk);
 
-// ----- mldsa/reduce.c -----
-/*************************************************
-* Name:        mldsa_montgomery_reduce
-*
-* Description: For finite field element a with -2^{31}MLDSA_Q <= a <= MLDSA_Q*2^31,
-*              compute r \equiv a*2^{-32} (mod MLDSA_Q) such that -MLDSA_Q < r < MLDSA_Q.
-*
-* Arguments:   - int64_t: finite field element a
-*
-* Returns r.
-**************************************************/
+
 static int32_t mldsa_montgomery_reduce(int64_t a) {
   int32_t t;
 
@@ -2762,16 +1993,7 @@ static int32_t mldsa_montgomery_reduce(int64_t a) {
   return t;
 }
 
-/*************************************************
-* Name:        mldsa_reduce32
-*
-* Description: For finite field element a with a <= 2^{31} - 2^{22} - 1,
-*              compute r \equiv a (mod MLDSA_Q) such that -6283008 <= r <= 6283008.
-*
-* Arguments:   - int32_t: finite field element a
-*
-* Returns r.
-**************************************************/
+
 static int32_t mldsa_reduce32(int32_t a) {
   int32_t t;
 
@@ -2780,33 +2002,13 @@ static int32_t mldsa_reduce32(int32_t a) {
   return t;
 }
 
-/*************************************************
-* Name:        mldsa_caddq
-*
-* Description: Add MLDSA_Q if input coefficient is negative.
-*
-* Arguments:   - int32_t: finite field element a
-*
-* Returns r.
-**************************************************/
+
 static int32_t mldsa_caddq(int32_t a) {
   a += (a >> 31) & MLDSA_Q;
   return a;
 }
 
-// ----- mldsa/rounding.c -----
-/*************************************************
-* Name:        mldsa_power2round
-*
-* Description: For finite field element a, compute a0, a1 such that
-*              a mod^+ MLDSA_Q = a1*2^MLDSA_D + a0 with -2^{MLDSA_D-1} < a0 <= 2^{MLDSA_D-1}.
-*              Assumes a to be standard representative.
-*
-* Arguments:   - int32_t a: input element
-*              - int32_t *a0: pointer to output element a0
-*
-* Returns a1.
-**************************************************/
+
 static int32_t mldsa_power2round(int32_t *a0, int32_t a)  {
   int32_t a1;
 
@@ -2815,20 +2017,7 @@ static int32_t mldsa_power2round(int32_t *a0, int32_t a)  {
   return a1;
 }
 
-/*************************************************
-* Name:        mldsa_decompose
-*
-* Description: For finite field element a, compute high and low bits a0, a1 such
-*              that a mod^+ MLDSA_Q = a1*ALPHA + a0 with -ALPHA/2 < a0 <= ALPHA/2 except
-*              if a1 = (MLDSA_Q-1)/ALPHA where we set a1 = 0 and
-*              -ALPHA/2 <= a0 = a mod^+ MLDSA_Q - MLDSA_Q < 0. Assumes a to be standard
-*              representative.
-*
-* Arguments:   - int32_t a: input element
-*              - int32_t *a0: pointer to output element a0
-*
-* Returns a1.
-**************************************************/
+
 static int32_t mldsa_decompose(int32_t *a0, int32_t a) {
   int32_t a1;
 
@@ -2846,17 +2035,7 @@ static int32_t mldsa_decompose(int32_t *a0, int32_t a) {
   return a1;
 }
 
-/*************************************************
-* Name:        mldsa_make_hint
-*
-* Description: Compute hint bit indicating whether the low bits of the
-*              input element overflow into the high bits.
-*
-* Arguments:   - int32_t a0: low bits of input element
-*              - int32_t a1: high bits of input element
-*
-* Returns 1 if overflow.
-**************************************************/
+
 static unsigned int mldsa_make_hint(int32_t a0, int32_t a1) {
   if(a0 > MLDSA_GAMMA2 || a0 < -MLDSA_GAMMA2 || (a0 == -MLDSA_GAMMA2 && a1 != 0))
     return 1;
@@ -2864,16 +2043,7 @@ static unsigned int mldsa_make_hint(int32_t a0, int32_t a1) {
   return 0;
 }
 
-/*************************************************
-* Name:        mldsa_use_hint
-*
-* Description: Correct high bits according to hint.
-*
-* Arguments:   - int32_t a: input element
-*              - unsigned int hint: hint bit
-*
-* Returns corrected high bits.
-**************************************************/
+
 static int32_t mldsa_use_hint(int32_t a, unsigned int hint) {
   int32_t a0, a1;
 
@@ -2894,7 +2064,7 @@ static int32_t mldsa_use_hint(int32_t a, unsigned int hint) {
 #endif
 }
 
-// ----- mldsa/ntt.c -----
+
 static const int32_t zetas[MLDSA_N] = {
          0,    25847, -2608894,  -518909,   237124,  -777960,  -876248,   466468,
    1826347,  2353451,  -359251, -2091905,  3119733, -2884855,  3111497,  2680103,
@@ -2930,14 +2100,7 @@ static const int32_t zetas[MLDSA_N] = {
    -554416,  3919660,   -48306, -1362209,  3937738,  1400424,  -846154,  1976782
 };
 
-/*************************************************
-* Name:        mldsa_ntt
-*
-* Description: Forward NTT, in-place. No modular reduction is performed after
-*              additions or subtractions. Output vector is in bitreversed order.
-*
-* Arguments:   - uint32_t p[MLDSA_N]: input/output coefficient array
-**************************************************/
+
 static void mldsa_ntt(int32_t a[MLDSA_N]) {
   unsigned int len, start, j, k;
   int32_t zeta, t;
@@ -2955,21 +2118,11 @@ static void mldsa_ntt(int32_t a[MLDSA_N]) {
   }
 }
 
-/*************************************************
-* Name:        mldsa_invntt_tomont
-*
-* Description: Inverse NTT and multiplication by Montgomery factor 2^32.
-*              In-place. No modular reductions after additions or
-*              subtractions; input coefficients need to be smaller than
-*              MLDSA_Q in absolute value. Output coefficient are smaller than MLDSA_Q in
-*              absolute value.
-*
-* Arguments:   - uint32_t p[MLDSA_N]: input/output coefficient array
-**************************************************/
+
 static void mldsa_invntt_tomont(int32_t a[MLDSA_N]) {
   unsigned int start, len, j, k;
   int32_t t, zeta;
-  const int32_t f = 41978; // mont^2/256
+  const int32_t f = 41978; // Montgomery factor squared divided by 256.
 
   k = 256;
   for(len = 1; len < MLDSA_N; len <<= 1) {
@@ -2989,7 +2142,7 @@ static void mldsa_invntt_tomont(int32_t a[MLDSA_N]) {
   }
 }
 
-// ----- mldsa/poly.c -----
+
 #ifdef DBENCH
 #define DBENCH_START() uint64_t time = cpucycles()
 #define DBENCH_STOP(t) t += cpucycles() - time - timing_overhead
@@ -2998,14 +2151,7 @@ static void mldsa_invntt_tomont(int32_t a[MLDSA_N]) {
 #define DBENCH_STOP(t)
 #endif
 
-/*************************************************
-* Name:        mldsa_poly_reduce
-*
-* Description: Inplace reduction of all coefficients of polynomial to
-*              representative in [-6283008,6283008].
-*
-* Arguments:   - mldsa_poly *a: pointer to input/output polynomial
-**************************************************/
+
 static void mldsa_poly_reduce(mldsa_poly *a) {
   unsigned int i;
   DBENCH_START();
@@ -3016,14 +2162,7 @@ static void mldsa_poly_reduce(mldsa_poly *a) {
   DBENCH_STOP(*tred);
 }
 
-/*************************************************
-* Name:        mldsa_poly_caddq
-*
-* Description: For all coefficients of in/out polynomial add MLDSA_Q if
-*              coefficient is negative.
-*
-* Arguments:   - mldsa_poly *a: pointer to input/output polynomial
-**************************************************/
+
 static void mldsa_poly_caddq(mldsa_poly *a) {
   unsigned int i;
   DBENCH_START();
@@ -3034,15 +2173,7 @@ static void mldsa_poly_caddq(mldsa_poly *a) {
   DBENCH_STOP(*tred);
 }
 
-/*************************************************
-* Name:        mldsa_poly_add
-*
-* Description: Add polynomials. No modular reduction is performed.
-*
-* Arguments:   - mldsa_poly *c: pointer to output polynomial
-*              - const mldsa_poly *a: pointer to first summand
-*              - const mldsa_poly *b: pointer to second summand
-**************************************************/
+
 static void mldsa_poly_add(mldsa_poly *c, const mldsa_poly *a, const mldsa_poly *b)  {
   unsigned int i;
   DBENCH_START();
@@ -3053,17 +2184,7 @@ static void mldsa_poly_add(mldsa_poly *c, const mldsa_poly *a, const mldsa_poly 
   DBENCH_STOP(*tadd);
 }
 
-/*************************************************
-* Name:        mldsa_poly_sub
-*
-* Description: Subtract polynomials. No modular reduction is
-*              performed.
-*
-* Arguments:   - mldsa_poly *c: pointer to output polynomial
-*              - const mldsa_poly *a: pointer to first input polynomial
-*              - const mldsa_poly *b: pointer to second input polynomial to be
-*                               subtraced from first input polynomial
-**************************************************/
+
 static void mldsa_poly_sub(mldsa_poly *c, const mldsa_poly *a, const mldsa_poly *b) {
   unsigned int i;
   DBENCH_START();
@@ -3074,14 +2195,7 @@ static void mldsa_poly_sub(mldsa_poly *c, const mldsa_poly *a, const mldsa_poly 
   DBENCH_STOP(*tadd);
 }
 
-/*************************************************
-* Name:        mldsa_poly_shiftl
-*
-* Description: Multiply polynomial by 2^MLDSA_D without modular reduction. Assumes
-*              input coefficients to be less than 2^{31-MLDSA_D} in absolute value.
-*
-* Arguments:   - mldsa_poly *a: pointer to input/output polynomial
-**************************************************/
+
 static void mldsa_poly_shiftl(mldsa_poly *a) {
   unsigned int i;
   DBENCH_START();
@@ -3092,14 +2206,7 @@ static void mldsa_poly_shiftl(mldsa_poly *a) {
   DBENCH_STOP(*tmul);
 }
 
-/*************************************************
-* Name:        mldsa_poly_ntt
-*
-* Description: Inplace forward NTT. Coefficients can grow by
-*              8*MLDSA_Q in absolute value.
-*
-* Arguments:   - mldsa_poly *a: pointer to input/output polynomial
-**************************************************/
+
 static void mldsa_poly_ntt(mldsa_poly *a) {
   DBENCH_START();
 
@@ -3108,15 +2215,7 @@ static void mldsa_poly_ntt(mldsa_poly *a) {
   DBENCH_STOP(*tmul);
 }
 
-/*************************************************
-* Name:        mldsa_poly_invntt_tomont
-*
-* Description: Inplace inverse NTT and multiplication by 2^{32}.
-*              Input coefficients need to be less than MLDSA_Q in absolute
-*              value and output coefficients are again bounded by MLDSA_Q.
-*
-* Arguments:   - mldsa_poly *a: pointer to input/output polynomial
-**************************************************/
+
 static void mldsa_poly_invntt_tomont(mldsa_poly *a) {
   DBENCH_START();
 
@@ -3125,17 +2224,7 @@ static void mldsa_poly_invntt_tomont(mldsa_poly *a) {
   DBENCH_STOP(*tmul);
 }
 
-/*************************************************
-* Name:        mldsa_poly_pointwise_montgomery
-*
-* Description: Pointwise multiplication of polynomials in NTT domain
-*              representation and multiplication of resulting polynomial
-*              by 2^{-32}.
-*
-* Arguments:   - mldsa_poly *c: pointer to output polynomial
-*              - const mldsa_poly *a: pointer to first input polynomial
-*              - const mldsa_poly *b: pointer to second input polynomial
-**************************************************/
+
 static void mldsa_poly_pointwise_montgomery(mldsa_poly *c, const mldsa_poly *a, const mldsa_poly *b) {
   unsigned int i;
   DBENCH_START();
@@ -3146,18 +2235,7 @@ static void mldsa_poly_pointwise_montgomery(mldsa_poly *c, const mldsa_poly *a, 
   DBENCH_STOP(*tmul);
 }
 
-/*************************************************
-* Name:        mldsa_poly_power2round
-*
-* Description: For all coefficients c of the input polynomial,
-*              compute c0, c1 such that c mod MLDSA_Q = c1*2^MLDSA_D + c0
-*              with -2^{MLDSA_D-1} < c0 <= 2^{MLDSA_D-1}. Assumes coefficients to be
-*              standard representatives.
-*
-* Arguments:   - mldsa_poly *a1: pointer to output polynomial with coefficients c1
-*              - mldsa_poly *a0: pointer to output polynomial with coefficients c0
-*              - const mldsa_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mldsa_poly_power2round(mldsa_poly *a1, mldsa_poly *a0, const mldsa_poly *a) {
   unsigned int i;
   DBENCH_START();
@@ -3168,19 +2246,7 @@ static void mldsa_poly_power2round(mldsa_poly *a1, mldsa_poly *a0, const mldsa_p
   DBENCH_STOP(*tround);
 }
 
-/*************************************************
-* Name:        mldsa_poly_decompose
-*
-* Description: For all coefficients c of the input polynomial,
-*              compute high and low bits c0, c1 such c mod MLDSA_Q = c1*ALPHA + c0
-*              with -ALPHA/2 < c0 <= ALPHA/2 except c1 = (MLDSA_Q-1)/ALPHA where we
-*              set c1 = 0 and -ALPHA/2 <= c0 = c mod MLDSA_Q - MLDSA_Q < 0.
-*              Assumes coefficients to be standard representatives.
-*
-* Arguments:   - mldsa_poly *a1: pointer to output polynomial with coefficients c1
-*              - mldsa_poly *a0: pointer to output polynomial with coefficients c0
-*              - const mldsa_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mldsa_poly_decompose(mldsa_poly *a1, mldsa_poly *a0, const mldsa_poly *a) {
   unsigned int i;
   DBENCH_START();
@@ -3191,19 +2257,7 @@ static void mldsa_poly_decompose(mldsa_poly *a1, mldsa_poly *a0, const mldsa_pol
   DBENCH_STOP(*tround);
 }
 
-/*************************************************
-* Name:        mldsa_poly_make_hint
-*
-* Description: Compute hint polynomial. The coefficients of which indicate
-*              whether the low bits of the corresponding coefficient of
-*              the input polynomial overflow into the high bits.
-*
-* Arguments:   - mldsa_poly *h: pointer to output hint polynomial
-*              - const mldsa_poly *a0: pointer to low part of input polynomial
-*              - const mldsa_poly *a1: pointer to high part of input polynomial
-*
-* Returns number of 1 bits.
-**************************************************/
+
 static unsigned int mldsa_poly_make_hint(mldsa_poly *h, const mldsa_poly *a0, const mldsa_poly *a1) {
   unsigned int i, s = 0;
   DBENCH_START();
@@ -3217,15 +2271,7 @@ static unsigned int mldsa_poly_make_hint(mldsa_poly *h, const mldsa_poly *a0, co
   return s;
 }
 
-/*************************************************
-* Name:        mldsa_poly_use_hint
-*
-* Description: Use hint polynomial to correct the high bits of a polynomial.
-*
-* Arguments:   - mldsa_poly *b: pointer to output polynomial with corrected high bits
-*              - const mldsa_poly *a: pointer to input polynomial
-*              - const mldsa_poly *h: pointer to input hint polynomial
-**************************************************/
+
 static void mldsa_poly_use_hint(mldsa_poly *b, const mldsa_poly *a, const mldsa_poly *h) {
   unsigned int i;
   DBENCH_START();
@@ -3236,17 +2282,7 @@ static void mldsa_poly_use_hint(mldsa_poly *b, const mldsa_poly *a, const mldsa_
   DBENCH_STOP(*tround);
 }
 
-/*************************************************
-* Name:        mldsa_poly_chknorm
-*
-* Description: Check infinity norm of polynomial against given bound.
-*              Assumes input coefficients were reduced by mldsa_reduce32().
-*
-* Arguments:   - const mldsa_poly *a: pointer to polynomial
-*              - int32_t B: norm bound
-*
-* Returns 0 if norm is strictly smaller than B <= (MLDSA_Q-1)/8 and 1 otherwise.
-**************************************************/
+
 static int mldsa_poly_chknorm(const mldsa_poly *a, int32_t B) {
   unsigned int i;
   int32_t t;
@@ -3255,11 +2291,9 @@ static int mldsa_poly_chknorm(const mldsa_poly *a, int32_t B) {
   if(B > (MLDSA_Q-1)/8)
     return 1;
 
-  /* It is ok to leak which coefficient violates the bound since
-     the probability for each coefficient is independent of secret
-     data but we must not leak the sign of the centralized representative. */
+  // The violating index may be public, but the sign must remain hidden.
   for(i = 0; i < MLDSA_N; ++i) {
-    /* Absolute value */
+    // Take the absolute value.
     t = a->coeffs[i] >> 31;
     t = a->coeffs[i] - (t & 2*a->coeffs[i]);
 
@@ -3273,20 +2307,7 @@ static int mldsa_poly_chknorm(const mldsa_poly *a, int32_t B) {
   return 0;
 }
 
-/*************************************************
-* Name:        mldsa_rej_uniform
-*
-* Description: Sample uniformly random coefficients in [0, MLDSA_Q-1] by
-*              performing rejection sampling on array of random bytes.
-*
-* Arguments:   - int32_t *a: pointer to output array (allocated)
-*              - unsigned int len: number of coefficients to be sampled
-*              - const uint8_t *buf: array of random bytes
-*              - unsigned int buflen: length of array of random bytes
-*
-* Returns number of sampled coefficients. Can be smaller than len if not enough
-* random bytes were given.
-**************************************************/
+
 static unsigned int mldsa_rej_uniform(int32_t *a,
                                 unsigned int len,
                                 const uint8_t *buf,
@@ -3311,17 +2332,7 @@ static unsigned int mldsa_rej_uniform(int32_t *a,
   return ctr;
 }
 
-/*************************************************
-* Name:        mldsa_poly_uniform
-*
-* Description: Sample polynomial with uniformly random coefficients
-*              in [0,MLDSA_Q-1] by performing rejection sampling on the
-*              output stream of SHAKE128(seed|nonce)
-*
-* Arguments:   - mldsa_poly *a: pointer to output polynomial
-*              - const uint8_t seed[]: byte array with seed of length MLDSA_SEEDBYTES
-*              - uint16_t nonce: 2-byte nonce
-**************************************************/
+
 #define POLY_UNIFORM_NBLOCKS ((768 + STREAM128_BLOCKBYTES - 1)/STREAM128_BLOCKBYTES)
 static void mldsa_poly_uniform(mldsa_poly *a,
                   const uint8_t seed[MLDSA_SEEDBYTES],
@@ -3348,20 +2359,7 @@ static void mldsa_poly_uniform(mldsa_poly *a,
   }
 }
 
-/*************************************************
-* Name:        rej_eta
-*
-* Description: Sample uniformly random coefficients in [-MLDSA_ETA, MLDSA_ETA] by
-*              performing rejection sampling on array of random bytes.
-*
-* Arguments:   - int32_t *a: pointer to output array (allocated)
-*              - unsigned int len: number of coefficients to be sampled
-*              - const uint8_t *buf: array of random bytes
-*              - unsigned int buflen: length of array of random bytes
-*
-* Returns number of sampled coefficients. Can be smaller than len if not enough
-* random bytes were given.
-**************************************************/
+
 static unsigned int rej_eta(int32_t *a,
                             unsigned int len,
                             const uint8_t *buf,
@@ -3397,17 +2395,7 @@ static unsigned int rej_eta(int32_t *a,
   return ctr;
 }
 
-/*************************************************
-* Name:        mldsa_poly_uniform_eta
-*
-* Description: Sample polynomial with uniformly random coefficients
-*              in [-MLDSA_ETA,MLDSA_ETA] by performing rejection sampling on the
-*              output stream from SHAKE256(seed|nonce)
-*
-* Arguments:   - mldsa_poly *a: pointer to output polynomial
-*              - const uint8_t seed[]: byte array with seed of length MLDSA_CRHBYTES
-*              - uint16_t nonce: 2-byte nonce
-**************************************************/
+
 #if MLDSA_ETA == 2
 #define POLY_UNIFORM_ETA_NBLOCKS ((136 + STREAM256_BLOCKBYTES - 1)/STREAM256_BLOCKBYTES)
 #elif MLDSA_ETA == 4
@@ -3433,17 +2421,7 @@ static void mldsa_poly_uniform_eta(mldsa_poly *a,
   }
 }
 
-/*************************************************
-* Name:        poly_uniform_gamma1m1
-*
-* Description: Sample polynomial with uniformly random coefficients
-*              in [-(MLDSA_GAMMA1 - 1), MLDSA_GAMMA1] by unpacking output stream
-*              of SHAKE256(seed|nonce)
-*
-* Arguments:   - mldsa_poly *a: pointer to output polynomial
-*              - const uint8_t seed[]: byte array with seed of length MLDSA_CRHBYTES
-*              - uint16_t nonce: 16-bit nonce
-**************************************************/
+
 #define POLY_UNIFORM_GAMMA1_NBLOCKS ((MLDSA_POLYZ_PACKEDBYTES + STREAM256_BLOCKBYTES - 1)/STREAM256_BLOCKBYTES)
 static void mldsa_poly_uniform_gamma1(mldsa_poly *a,
                          const uint8_t seed[MLDSA_CRHBYTES],
@@ -3457,16 +2435,7 @@ static void mldsa_poly_uniform_gamma1(mldsa_poly *a,
   mldsa_polyz_unpack(a, buf);
 }
 
-/*************************************************
-* Name:        challenge
-*
-* Description: Implementation of H. Samples polynomial with MLDSA_TAU nonzero
-*              coefficients in {-1,1} using the output stream of
-*              SHAKE256(seed).
-*
-* Arguments:   - mldsa_poly *c: pointer to output polynomial
-*              - const uint8_t mu[]: byte array containing seed of length MLDSA_CTILDEBYTES
-**************************************************/
+
 static void mldsa_poly_challenge(mldsa_poly *c, const uint8_t seed[MLDSA_CTILDEBYTES]) {
   unsigned int i, b, pos;
   uint64_t signs;
@@ -3501,15 +2470,7 @@ static void mldsa_poly_challenge(mldsa_poly *c, const uint8_t seed[MLDSA_CTILDEB
   }
 }
 
-/*************************************************
-* Name:        mldsa_polyeta_pack
-*
-* Description: Bit-pack polynomial with coefficients in [-MLDSA_ETA,MLDSA_ETA].
-*
-* Arguments:   - uint8_t *r: pointer to output byte array with at least
-*                            MLDSA_POLYETA_PACKEDBYTES bytes
-*              - const mldsa_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mldsa_polyeta_pack(uint8_t *r, const mldsa_poly *a) {
   unsigned int i;
   uint8_t t[8];
@@ -3541,14 +2502,7 @@ static void mldsa_polyeta_pack(uint8_t *r, const mldsa_poly *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyeta_unpack
-*
-* Description: Unpack polynomial with coefficients in [-MLDSA_ETA,MLDSA_ETA].
-*
-* Arguments:   - mldsa_poly *r: pointer to output polynomial
-*              - const uint8_t *a: byte array with bit-packed polynomial
-**************************************************/
+
 static void mldsa_polyeta_unpack(mldsa_poly *r, const uint8_t *a) {
   unsigned int i;
   DBENCH_START();
@@ -3585,16 +2539,7 @@ static void mldsa_polyeta_unpack(mldsa_poly *r, const uint8_t *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyt1_pack
-*
-* Description: Bit-pack polynomial t1 with coefficients fitting in 10 bits.
-*              Input coefficients are assumed to be standard representatives.
-*
-* Arguments:   - uint8_t *r: pointer to output byte array with at least
-*                            MLDSA_POLYT1_PACKEDBYTES bytes
-*              - const mldsa_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mldsa_polyt1_pack(uint8_t *r, const mldsa_poly *a) {
   unsigned int i;
   DBENCH_START();
@@ -3610,15 +2555,7 @@ static void mldsa_polyt1_pack(uint8_t *r, const mldsa_poly *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyt1_unpack
-*
-* Description: Unpack polynomial t1 with 10-bit coefficients.
-*              Output coefficients are standard representatives.
-*
-* Arguments:   - mldsa_poly *r: pointer to output polynomial
-*              - const uint8_t *a: byte array with bit-packed polynomial
-**************************************************/
+
 static void mldsa_polyt1_unpack(mldsa_poly *r, const uint8_t *a) {
   unsigned int i;
   DBENCH_START();
@@ -3633,15 +2570,7 @@ static void mldsa_polyt1_unpack(mldsa_poly *r, const uint8_t *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyt0_pack
-*
-* Description: Bit-pack polynomial t0 with coefficients in ]-2^{MLDSA_D-1}, 2^{MLDSA_D-1}].
-*
-* Arguments:   - uint8_t *r: pointer to output byte array with at least
-*                            MLDSA_POLYT0_PACKEDBYTES bytes
-*              - const mldsa_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mldsa_polyt0_pack(uint8_t *r, const mldsa_poly *a) {
   unsigned int i;
   uint32_t t[8];
@@ -3682,14 +2611,7 @@ static void mldsa_polyt0_pack(uint8_t *r, const mldsa_poly *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyt0_unpack
-*
-* Description: Unpack polynomial t0 with coefficients in ]-2^{MLDSA_D-1}, 2^{MLDSA_D-1}].
-*
-* Arguments:   - mldsa_poly *r: pointer to output polynomial
-*              - const uint8_t *a: byte array with bit-packed polynomial
-**************************************************/
+
 static void mldsa_polyt0_unpack(mldsa_poly *r, const uint8_t *a) {
   unsigned int i;
   DBENCH_START();
@@ -3744,16 +2666,7 @@ static void mldsa_polyt0_unpack(mldsa_poly *r, const uint8_t *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyz_pack
-*
-* Description: Bit-pack polynomial with coefficients
-*              in [-(MLDSA_GAMMA1 - 1), MLDSA_GAMMA1].
-*
-* Arguments:   - uint8_t *r: pointer to output byte array with at least
-*                            MLDSA_POLYZ_PACKEDBYTES bytes
-*              - const mldsa_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mldsa_polyz_pack(uint8_t *r, const mldsa_poly *a) {
   unsigned int i;
   uint32_t t[4];
@@ -3796,15 +2709,7 @@ static void mldsa_polyz_pack(uint8_t *r, const mldsa_poly *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyz_unpack
-*
-* Description: Unpack polynomial z with coefficients
-*              in [-(MLDSA_GAMMA1 - 1), MLDSA_GAMMA1].
-*
-* Arguments:   - mldsa_poly *r: pointer to output polynomial
-*              - const uint8_t *a: byte array with bit-packed polynomial
-**************************************************/
+
 static void mldsa_polyz_unpack(mldsa_poly *r, const uint8_t *a) {
   unsigned int i;
   DBENCH_START();
@@ -3846,7 +2751,6 @@ static void mldsa_polyz_unpack(mldsa_poly *r, const uint8_t *a) {
     r->coeffs[2*i+1]  = a[5*i+2] >> 4;
     r->coeffs[2*i+1] |= (uint32_t)a[5*i+3] << 4;
     r->coeffs[2*i+1] |= (uint32_t)a[5*i+4] << 12;
-    /* r->coeffs[2*i+1] &= 0xFFFFF; */ /* No effect, since we're anyway at 20 bits */
 
     r->coeffs[2*i+0] = MLDSA_GAMMA1 - r->coeffs[2*i+0];
     r->coeffs[2*i+1] = MLDSA_GAMMA1 - r->coeffs[2*i+1];
@@ -3856,16 +2760,7 @@ static void mldsa_polyz_unpack(mldsa_poly *r, const uint8_t *a) {
   DBENCH_STOP(*tpack);
 }
 
-/*************************************************
-* Name:        mldsa_polyw1_pack
-*
-* Description: Bit-pack polynomial w1 with coefficients in [0,15] or [0,43].
-*              Input coefficients are assumed to be standard representatives.
-*
-* Arguments:   - uint8_t *r: pointer to output byte array with at least
-*                            MLDSA_POLYW1_PACKEDBYTES bytes
-*              - const mldsa_poly *a: pointer to input polynomial
-**************************************************/
+
 static void mldsa_polyw1_pack(uint8_t *r, const mldsa_poly *a) {
   unsigned int i;
   DBENCH_START();
@@ -3887,17 +2782,7 @@ static void mldsa_polyw1_pack(uint8_t *r, const mldsa_poly *a) {
   DBENCH_STOP(*tpack);
 }
 
-// ----- mldsa/polyvec.c -----
-/*************************************************
-* Name:        expand_mat
-*
-* Description: Implementation of ExpandA. Generates matrix A with uniformly
-*              random coefficients a_{i,j} by performing rejection
-*              sampling on the output stream of SHAKE128(rho|j|i)
-*
-* Arguments:   - mldsa_polyvecl mat[MLDSA_K]: output matrix
-*              - const uint8_t rho[]: byte array containing seed rho
-**************************************************/
+
 static void mldsa_polyvec_matrix_expand(mldsa_polyvecl mat[MLDSA_K], const uint8_t rho[MLDSA_SEEDBYTES]) {
   unsigned int i, j;
 
@@ -3913,9 +2798,9 @@ static void mldsa_polyvec_matrix_pointwise_montgomery(mldsa_polyveck *t, const m
     mldsa_polyvecl_pointwise_acc_montgomery(&t->vec[i], &mat[i], v);
 }
 
-/**************************************************************/
-/************ Vectors of polynomials of length MLDSA_L **************/
-/**************************************************************/
+
+// Vector operations for MLDSA_L polynomials.
+
 
 static void mldsa_polyvecl_uniform_eta(mldsa_polyvecl *v, const uint8_t seed[MLDSA_CRHBYTES], uint16_t nonce) {
   unsigned int i;
@@ -3938,16 +2823,7 @@ static void mldsa_polyvecl_reduce(mldsa_polyvecl *v) {
     mldsa_poly_reduce(&v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyvecl_add
-*
-* Description: Add vectors of polynomials of length MLDSA_L.
-*              No modular reduction is performed.
-*
-* Arguments:   - mldsa_polyvecl *w: pointer to output vector
-*              - const mldsa_polyvecl *u: pointer to first summand
-*              - const mldsa_polyvecl *v: pointer to second summand
-**************************************************/
+
 static void mldsa_polyvecl_add(mldsa_polyvecl *w, const mldsa_polyvecl *u, const mldsa_polyvecl *v) {
   unsigned int i;
 
@@ -3955,14 +2831,7 @@ static void mldsa_polyvecl_add(mldsa_polyvecl *w, const mldsa_polyvecl *u, const
     mldsa_poly_add(&w->vec[i], &u->vec[i], &v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyvecl_ntt
-*
-* Description: Forward NTT of all polynomials in vector of length MLDSA_L. Output
-*              coefficients can be up to 16*MLDSA_Q larger than input coefficients.
-*
-* Arguments:   - mldsa_polyvecl *v: pointer to input/output vector
-**************************************************/
+
 static void mldsa_polyvecl_ntt(mldsa_polyvecl *v) {
   unsigned int i;
 
@@ -3984,17 +2853,7 @@ static void mldsa_polyvecl_pointwise_poly_montgomery(mldsa_polyvecl *r, const ml
     mldsa_poly_pointwise_montgomery(&r->vec[i], a, &v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyvecl_pointwise_acc_montgomery
-*
-* Description: Pointwise multiply vectors of polynomials of length MLDSA_L, multiply
-*              resulting vector by 2^{-32} and add (accumulate) polynomials
-*              in it. Input/output vectors are in NTT domain representation.
-*
-* Arguments:   - mldsa_poly *w: output polynomial
-*              - const mldsa_polyvecl *u: pointer to first input vector
-*              - const mldsa_polyvecl *v: pointer to second input vector
-**************************************************/
+
 static void mldsa_polyvecl_pointwise_acc_montgomery(mldsa_poly *w,
                                        const mldsa_polyvecl *u,
                                        const mldsa_polyvecl *v)
@@ -4009,18 +2868,7 @@ static void mldsa_polyvecl_pointwise_acc_montgomery(mldsa_poly *w,
   }
 }
 
-/*************************************************
-* Name:        mldsa_polyvecl_chknorm
-*
-* Description: Check infinity norm of polynomials in vector of length MLDSA_L.
-*              Assumes input mldsa_polyvecl to be reduced by mldsa_polyvecl_reduce().
-*
-* Arguments:   - const mldsa_polyvecl *v: pointer to vector
-*              - int32_t B: norm bound
-*
-* Returns 0 if norm of all polynomials is strictly smaller than B <= (MLDSA_Q-1)/8
-* and 1 otherwise.
-**************************************************/
+
 static int mldsa_polyvecl_chknorm(const mldsa_polyvecl *v, int32_t bound)  {
   unsigned int i;
 
@@ -4031,9 +2879,9 @@ static int mldsa_polyvecl_chknorm(const mldsa_polyvecl *v, int32_t bound)  {
   return 0;
 }
 
-/**************************************************************/
-/************ Vectors of polynomials of length MLDSA_K **************/
-/**************************************************************/
+
+// Vector operations for MLDSA_K polynomials.
+
 
 static void mldsa_polyveck_uniform_eta(mldsa_polyveck *v, const uint8_t seed[MLDSA_CRHBYTES], uint16_t nonce) {
   unsigned int i;
@@ -4042,14 +2890,7 @@ static void mldsa_polyveck_uniform_eta(mldsa_polyveck *v, const uint8_t seed[MLD
     mldsa_poly_uniform_eta(&v->vec[i], seed, nonce++);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_reduce
-*
-* Description: Reduce coefficients of polynomials in vector of length MLDSA_K
-*              to representatives in [-6283008,6283008].
-*
-* Arguments:   - mldsa_polyveck *v: pointer to input/output vector
-**************************************************/
+
 static void mldsa_polyveck_reduce(mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4057,14 +2898,7 @@ static void mldsa_polyveck_reduce(mldsa_polyveck *v) {
     mldsa_poly_reduce(&v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_caddq
-*
-* Description: For all coefficients of polynomials in vector of length MLDSA_K
-*              add MLDSA_Q if coefficient is negative.
-*
-* Arguments:   - mldsa_polyveck *v: pointer to input/output vector
-**************************************************/
+
 static void mldsa_polyveck_caddq(mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4072,16 +2906,7 @@ static void mldsa_polyveck_caddq(mldsa_polyveck *v) {
     mldsa_poly_caddq(&v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_add
-*
-* Description: Add vectors of polynomials of length MLDSA_K.
-*              No modular reduction is performed.
-*
-* Arguments:   - mldsa_polyveck *w: pointer to output vector
-*              - const mldsa_polyveck *u: pointer to first summand
-*              - const mldsa_polyveck *v: pointer to second summand
-**************************************************/
+
 static void mldsa_polyveck_add(mldsa_polyveck *w, const mldsa_polyveck *u, const mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4089,17 +2914,7 @@ static void mldsa_polyveck_add(mldsa_polyveck *w, const mldsa_polyveck *u, const
     mldsa_poly_add(&w->vec[i], &u->vec[i], &v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_sub
-*
-* Description: Subtract vectors of polynomials of length MLDSA_K.
-*              No modular reduction is performed.
-*
-* Arguments:   - mldsa_polyveck *w: pointer to output vector
-*              - const mldsa_polyveck *u: pointer to first input vector
-*              - const mldsa_polyveck *v: pointer to second input vector to be
-*                                   subtracted from first input vector
-**************************************************/
+
 static void mldsa_polyveck_sub(mldsa_polyveck *w, const mldsa_polyveck *u, const mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4107,14 +2922,7 @@ static void mldsa_polyveck_sub(mldsa_polyveck *w, const mldsa_polyveck *u, const
     mldsa_poly_sub(&w->vec[i], &u->vec[i], &v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_shiftl
-*
-* Description: Multiply vector of polynomials of Length MLDSA_K by 2^MLDSA_D without modular
-*              reduction. Assumes input coefficients to be less than 2^{31-MLDSA_D}.
-*
-* Arguments:   - mldsa_polyveck *v: pointer to input/output vector
-**************************************************/
+
 static void mldsa_polyveck_shiftl(mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4122,14 +2930,7 @@ static void mldsa_polyveck_shiftl(mldsa_polyveck *v) {
     mldsa_poly_shiftl(&v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_ntt
-*
-* Description: Forward NTT of all polynomials in vector of length MLDSA_K. Output
-*              coefficients can be up to 16*MLDSA_Q larger than input coefficients.
-*
-* Arguments:   - mldsa_polyveck *v: pointer to input/output vector
-**************************************************/
+
 static void mldsa_polyveck_ntt(mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4137,15 +2938,7 @@ static void mldsa_polyveck_ntt(mldsa_polyveck *v) {
     mldsa_poly_ntt(&v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_invntt_tomont
-*
-* Description: Inverse NTT and multiplication by 2^{32} of polynomials
-*              in vector of length MLDSA_K. Input coefficients need to be less
-*              than 2*MLDSA_Q.
-*
-* Arguments:   - mldsa_polyveck *v: pointer to input/output vector
-**************************************************/
+
 static void mldsa_polyveck_invntt_tomont(mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4161,18 +2954,6 @@ static void mldsa_polyveck_pointwise_poly_montgomery(mldsa_polyveck *r, const ml
 }
 
 
-/*************************************************
-* Name:        mldsa_polyveck_chknorm
-*
-* Description: Check infinity norm of polynomials in vector of length MLDSA_K.
-*              Assumes input mldsa_polyveck to be reduced by mldsa_polyveck_reduce().
-*
-* Arguments:   - const mldsa_polyveck *v: pointer to vector
-*              - int32_t B: norm bound
-*
-* Returns 0 if norm of all polynomials are strictly smaller than B <= (MLDSA_Q-1)/8
-* and 1 otherwise.
-**************************************************/
 static int mldsa_polyveck_chknorm(const mldsa_polyveck *v, int32_t bound) {
   unsigned int i;
 
@@ -4183,20 +2964,7 @@ static int mldsa_polyveck_chknorm(const mldsa_polyveck *v, int32_t bound) {
   return 0;
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_power2round
-*
-* Description: For all coefficients a of polynomials in vector of length MLDSA_K,
-*              compute a0, a1 such that a mod^+ MLDSA_Q = a1*2^MLDSA_D + a0
-*              with -2^{MLDSA_D-1} < a0 <= 2^{MLDSA_D-1}. Assumes coefficients to be
-*              standard representatives.
-*
-* Arguments:   - mldsa_polyveck *v1: pointer to output vector of polynomials with
-*                              coefficients a1
-*              - mldsa_polyveck *v0: pointer to output vector of polynomials with
-*                              coefficients a0
-*              - const mldsa_polyveck *v: pointer to input vector
-**************************************************/
+
 static void mldsa_polyveck_power2round(mldsa_polyveck *v1, mldsa_polyveck *v0, const mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4204,21 +2972,7 @@ static void mldsa_polyveck_power2round(mldsa_polyveck *v1, mldsa_polyveck *v0, c
     mldsa_poly_power2round(&v1->vec[i], &v0->vec[i], &v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_decompose
-*
-* Description: For all coefficients a of polynomials in vector of length MLDSA_K,
-*              compute high and low bits a0, a1 such a mod^+ MLDSA_Q = a1*ALPHA + a0
-*              with -ALPHA/2 < a0 <= ALPHA/2 except a1 = (MLDSA_Q-1)/ALPHA where we
-*              set a1 = 0 and -ALPHA/2 <= a0 = a mod MLDSA_Q - MLDSA_Q < 0.
-*              Assumes coefficients to be standard representatives.
-*
-* Arguments:   - mldsa_polyveck *v1: pointer to output vector of polynomials with
-*                              coefficients a1
-*              - mldsa_polyveck *v0: pointer to output vector of polynomials with
-*                              coefficients a0
-*              - const mldsa_polyveck *v: pointer to input vector
-**************************************************/
+
 static void mldsa_polyveck_decompose(mldsa_polyveck *v1, mldsa_polyveck *v0, const mldsa_polyveck *v) {
   unsigned int i;
 
@@ -4226,17 +2980,7 @@ static void mldsa_polyveck_decompose(mldsa_polyveck *v1, mldsa_polyveck *v0, con
     mldsa_poly_decompose(&v1->vec[i], &v0->vec[i], &v->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_make_hint
-*
-* Description: Compute hint vector.
-*
-* Arguments:   - mldsa_polyveck *h: pointer to output vector
-*              - const mldsa_polyveck *v0: pointer to low part of input vector
-*              - const mldsa_polyveck *v1: pointer to high part of input vector
-*
-* Returns number of 1 bits.
-**************************************************/
+
 static unsigned int mldsa_polyveck_make_hint(mldsa_polyveck *h,
                                 const mldsa_polyveck *v0,
                                 const mldsa_polyveck *v1)
@@ -4249,16 +2993,7 @@ static unsigned int mldsa_polyveck_make_hint(mldsa_polyveck *h,
   return s;
 }
 
-/*************************************************
-* Name:        mldsa_polyveck_use_hint
-*
-* Description: Use hint vector to correct the high bits of input vector.
-*
-* Arguments:   - mldsa_polyveck *w: pointer to output vector of polynomials with
-*                             corrected high bits
-*              - const mldsa_polyveck *u: pointer to input vector
-*              - const mldsa_polyveck *h: pointer to input hint vector
-**************************************************/
+
 static void mldsa_polyveck_use_hint(mldsa_polyveck *w, const mldsa_polyveck *u, const mldsa_polyveck *h) {
   unsigned int i;
 
@@ -4273,16 +3008,7 @@ static void mldsa_polyveck_pack_w1(uint8_t r[MLDSA_K*MLDSA_POLYW1_PACKEDBYTES], 
     mldsa_polyw1_pack(&r[i*MLDSA_POLYW1_PACKEDBYTES], &w1->vec[i]);
 }
 
-// ----- mldsa/packing.c -----
-/*************************************************
-* Name:        mldsa_pack_pk
-*
-* Description: Bit-pack public key pk = (rho, t1).
-*
-* Arguments:   - uint8_t pk[]: output byte array
-*              - const uint8_t rho[]: byte array containing rho
-*              - const mldsa_polyveck *t1: pointer to vector t1
-**************************************************/
+
 static void mldsa_pack_pk(uint8_t pk[MLDSA_CRYPTO_PUBLICKEYBYTES],
              const uint8_t rho[MLDSA_SEEDBYTES],
              const mldsa_polyveck *t1)
@@ -4297,15 +3023,7 @@ static void mldsa_pack_pk(uint8_t pk[MLDSA_CRYPTO_PUBLICKEYBYTES],
     mldsa_polyt1_pack(pk + i*MLDSA_POLYT1_PACKEDBYTES, &t1->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_unpack_pk
-*
-* Description: Unpack public key pk = (rho, t1).
-*
-* Arguments:   - const uint8_t rho[]: output byte array for rho
-*              - const mldsa_polyveck *t1: pointer to output vector t1
-*              - uint8_t pk[]: byte array containing bit-packed pk
-**************************************************/
+
 static void mldsa_unpack_pk(uint8_t rho[MLDSA_SEEDBYTES],
                mldsa_polyveck *t1,
                const uint8_t pk[MLDSA_CRYPTO_PUBLICKEYBYTES])
@@ -4320,19 +3038,7 @@ static void mldsa_unpack_pk(uint8_t rho[MLDSA_SEEDBYTES],
     mldsa_polyt1_unpack(&t1->vec[i], pk + i*MLDSA_POLYT1_PACKEDBYTES);
 }
 
-/*************************************************
-* Name:        mldsa_pack_sk
-*
-* Description: Bit-pack secret key sk = (rho, tr, key, t0, s1, s2).
-*
-* Arguments:   - uint8_t sk[]: output byte array
-*              - const uint8_t rho[]: byte array containing rho
-*              - const uint8_t tr[]: byte array containing tr
-*              - const uint8_t key[]: byte array containing key
-*              - const mldsa_polyveck *t0: pointer to vector t0
-*              - const mldsa_polyvecl *s1: pointer to vector s1
-*              - const mldsa_polyveck *s2: pointer to vector s2
-**************************************************/
+
 static void mldsa_pack_sk(uint8_t sk[MLDSA_CRYPTO_SECRETKEYBYTES],
              const uint8_t rho[MLDSA_SEEDBYTES],
              const uint8_t tr[MLDSA_TRBYTES],
@@ -4367,19 +3073,7 @@ static void mldsa_pack_sk(uint8_t sk[MLDSA_CRYPTO_SECRETKEYBYTES],
     mldsa_polyt0_pack(sk + i*MLDSA_POLYT0_PACKEDBYTES, &t0->vec[i]);
 }
 
-/*************************************************
-* Name:        mldsa_unpack_sk
-*
-* Description: Unpack secret key sk = (rho, tr, key, t0, s1, s2).
-*
-* Arguments:   - const uint8_t rho[]: output byte array for rho
-*              - const uint8_t tr[]: output byte array for tr
-*              - const uint8_t key[]: output byte array for key
-*              - const mldsa_polyveck *t0: pointer to output vector t0
-*              - const mldsa_polyvecl *s1: pointer to output vector s1
-*              - const mldsa_polyveck *s2: pointer to output vector s2
-*              - uint8_t sk[]: byte array containing bit-packed sk
-**************************************************/
+
 static void mldsa_unpack_sk(uint8_t rho[MLDSA_SEEDBYTES],
                uint8_t tr[MLDSA_TRBYTES],
                uint8_t key[MLDSA_SEEDBYTES],
@@ -4414,16 +3108,7 @@ static void mldsa_unpack_sk(uint8_t rho[MLDSA_SEEDBYTES],
     mldsa_polyt0_unpack(&t0->vec[i], sk + i*MLDSA_POLYT0_PACKEDBYTES);
 }
 
-/*************************************************
-* Name:        mldsa_pack_sig
-*
-* Description: Bit-pack signature sig = (c, z, h).
-*
-* Arguments:   - uint8_t sig[]: output byte array
-*              - const uint8_t *c: pointer to challenge hash length MLDSA_SEEDBYTES
-*              - const mldsa_polyvecl *z: pointer to vector z
-*              - const mldsa_polyveck *h: pointer to hint vector h
-**************************************************/
+
 static void mldsa_pack_sig(uint8_t sig[MLDSA_CRYPTO_BYTES],
               const uint8_t c[MLDSA_CTILDEBYTES],
               const mldsa_polyvecl *z,
@@ -4439,7 +3124,7 @@ static void mldsa_pack_sig(uint8_t sig[MLDSA_CRYPTO_BYTES],
     mldsa_polyz_pack(sig + i*MLDSA_POLYZ_PACKEDBYTES, &z->vec[i]);
   sig += MLDSA_L*MLDSA_POLYZ_PACKEDBYTES;
 
-  /* Encode h */
+  // Encode the hint vector.
   for(i = 0; i < MLDSA_OMEGA + MLDSA_K; ++i)
     sig[i] = 0;
 
@@ -4453,19 +3138,7 @@ static void mldsa_pack_sig(uint8_t sig[MLDSA_CRYPTO_BYTES],
   }
 }
 
-/*************************************************
-* Name:        mldsa_unpack_sig
-*
-* Description: Unpack signature sig = (c, z, h).
-*
-* Arguments:   - uint8_t *c: pointer to output challenge hash
-*              - mldsa_polyvecl *z: pointer to output vector z
-*              - mldsa_polyveck *h: pointer to output hint vector h
-*              - const uint8_t sig[]: byte array containing
-*                bit-packed signature
-*
-* Returns 1 in case of malformed signature; otherwise 0.
-**************************************************/
+
 static int mldsa_unpack_sig(uint8_t c[MLDSA_CTILDEBYTES],
                mldsa_polyvecl *z,
                mldsa_polyveck *h,
@@ -4481,7 +3154,7 @@ static int mldsa_unpack_sig(uint8_t c[MLDSA_CTILDEBYTES],
     mldsa_polyz_unpack(&z->vec[i], sig + i*MLDSA_POLYZ_PACKEDBYTES);
   sig += MLDSA_L*MLDSA_POLYZ_PACKEDBYTES;
 
-  /* Decode h */
+  // Decode the hint vector.
   k = 0;
   for(i = 0; i < MLDSA_K; ++i) {
     for(j = 0; j < MLDSA_N; ++j)
@@ -4491,7 +3164,7 @@ static int mldsa_unpack_sig(uint8_t c[MLDSA_CTILDEBYTES],
       return 1;
 
     for(j = k; j < sig[MLDSA_OMEGA + i]; ++j) {
-      /* Coefficients are ordered for strong unforgeability */
+      // Keep the coefficient order required for strong unforgeability.
       if(j > k && sig[j] <= sig[j-1]) return 1;
       h->vec[i].coeffs[sig[j]] = 1;
     }
@@ -4499,7 +3172,7 @@ static int mldsa_unpack_sig(uint8_t c[MLDSA_CTILDEBYTES],
     k = sig[MLDSA_OMEGA + i];
   }
 
-  /* Extra indices are zero for strong unforgeability */
+  // Set unused hint indices to zero.
   for(j = k; j < MLDSA_OMEGA; ++j)
     if(sig[j])
       return 1;
@@ -4507,7 +3180,7 @@ static int mldsa_unpack_sig(uint8_t c[MLDSA_CTILDEBYTES],
   return 0;
 }
 
-// ----- mldsa/symmetric-shake.c -----
+
 static void mldsa_shake128_stream_init(keccak_state *state, const uint8_t seed[MLDSA_SEEDBYTES], uint16_t nonce)
 {
   uint8_t t[2];
@@ -4532,19 +3205,7 @@ static void mldsa_shake256_stream_init(keccak_state *state, const uint8_t seed[M
   shake256_finalize(state);
 }
 
-// ----- mldsa/sign.c -----
-/*************************************************
-* Name:        mldsa_keypair
-*
-* Description: Generates public and private key.
-*
-* Arguments:   - uint8_t *pk: pointer to output public key (allocated
-*                             array of MLDSA_CRYPTO_PUBLICKEYBYTES bytes)
-*              - uint8_t *sk: pointer to output private key (allocated
-*                             array of MLDSA_CRYPTO_SECRETKEYBYTES bytes)
-*
-* Returns 0 (success)
-**************************************************/
+
 static int mldsa_keypair_derand(uint8_t *pk, uint8_t *sk,
                                const uint8_t seed[MLDSA_SEEDBYTES]) {
   uint8_t seedbuf[2*MLDSA_SEEDBYTES + MLDSA_CRHBYTES];
@@ -4554,7 +3215,7 @@ static int mldsa_keypair_derand(uint8_t *pk, uint8_t *sk,
   mldsa_polyvecl s1, s1hat;
   mldsa_polyveck s2, t1, t0;
 
-  /* Get randomness for rho, rhoprime and key */
+  // Expand the key-generation seed.
   memcpy(seedbuf, seed, MLDSA_SEEDBYTES);
   seedbuf[MLDSA_SEEDBYTES+0] = MLDSA_K;
   seedbuf[MLDSA_SEEDBYTES+1] = MLDSA_L;
@@ -4563,29 +3224,29 @@ static int mldsa_keypair_derand(uint8_t *pk, uint8_t *sk,
   rhoprime = rho + MLDSA_SEEDBYTES;
   key = rhoprime + MLDSA_CRHBYTES;
 
-  /* Expand matrix */
+  // Expand the public matrix.
   mldsa_polyvec_matrix_expand(mat, rho);
 
-  /* Sample short vectors s1 and s2 */
+  // Sample the secret vectors.
   mldsa_polyvecl_uniform_eta(&s1, rhoprime, 0);
   mldsa_polyveck_uniform_eta(&s2, rhoprime, MLDSA_L);
 
-  /* Matrix-vector multiplication */
+  // Compute the matrix-vector product.
   s1hat = s1;
   mldsa_polyvecl_ntt(&s1hat);
   mldsa_polyvec_matrix_pointwise_montgomery(&t1, mat, &s1hat);
   mldsa_polyveck_reduce(&t1);
   mldsa_polyveck_invntt_tomont(&t1);
 
-  /* Add error vector s2 */
+  // Add the second secret vector.
   mldsa_polyveck_add(&t1, &t1, &s2);
 
-  /* Extract t1 and write public key */
+  // Round t and serialize t1.
   mldsa_polyveck_caddq(&t1);
   mldsa_polyveck_power2round(&t1, &t0, &t1);
   mldsa_pack_pk(pk, rho, &t1);
 
-  /* Compute H(rho, t1) and write secret key */
+  // Store the public-key hash and secret key.
   shake256(tr, MLDSA_TRBYTES, pk, MLDSA_CRYPTO_PUBLICKEYBYTES);
   mldsa_pack_sk(sk, rho, tr, key, &t0, &s1, &s2);
 
@@ -4597,22 +3258,7 @@ static int mldsa_keypair_derand(uint8_t *pk, uint8_t *sk,
   return 0;
 }
 
-/*************************************************
-* Name:        mldsa_signature_internal
-*
-* Description: Computes signature. Internal API.
-*
-* Arguments:   - uint8_t *sig:   pointer to output signature (of length MLDSA_CRYPTO_BYTES)
-*              - size_t *siglen: pointer to output length of signature
-*              - uint8_t *m:     pointer to message to be signed
-*              - size_t mlen:    length of message
-*              - uint8_t *pre:   pointer to prefix string
-*              - size_t prelen:  length of prefix string
-*              - uint8_t *rnd:   pointer to random seed
-*              - uint8_t *sk:    pointer to bit-packed secret key
-*
-* Returns 0 (success)
-**************************************************/
+
 static int mldsa_signature_internal(uint8_t *sig,
                                    size_t *siglen,
                                    const uint8_t *m,
@@ -4638,7 +3284,7 @@ static int mldsa_signature_internal(uint8_t *sig,
   rhoprime = mu + MLDSA_CRHBYTES;
   mldsa_unpack_sk(rho, tr, key, &t0, &s1, &s2, sk);
 
-  /* Compute mu = CRH(tr, pre, msg) */
+  // Compute the message representative mu.
   shake256_init(&state);
   shake256_absorb(&state, tr, MLDSA_TRBYTES);
   shake256_absorb(&state, pre, prelen);
@@ -4646,7 +3292,7 @@ static int mldsa_signature_internal(uint8_t *sig,
   shake256_finalize(&state);
   shake256_squeeze(mu, MLDSA_CRHBYTES, &state);
 
-  /* Compute rhoprime = CRH(key, rnd, mu) */
+  // Derive the per-signature seed.
   shake256_init(&state);
   shake256_absorb(&state, key, MLDSA_SEEDBYTES);
   shake256_absorb(&state, rnd, MLDSA_RNDBYTES);
@@ -4654,24 +3300,24 @@ static int mldsa_signature_internal(uint8_t *sig,
   shake256_finalize(&state);
   shake256_squeeze(rhoprime, MLDSA_CRHBYTES, &state);
 
-  /* Expand matrix and transform vectors */
+  // Expand the matrix and transform the secret vectors.
   mldsa_polyvec_matrix_expand(mat, rho);
   mldsa_polyvecl_ntt(&s1);
   mldsa_polyveck_ntt(&s2);
   mldsa_polyveck_ntt(&t0);
 
 rej:
-  /* Sample intermediate vector y */
+  // Sample the masking vector.
   mldsa_polyvecl_uniform_gamma1(&y, rhoprime, nonce++);
 
-  /* Matrix-vector multiplication */
+  // Compute the matrix-vector product.
   z = y;
   mldsa_polyvecl_ntt(&z);
   mldsa_polyvec_matrix_pointwise_montgomery(&w1, mat, &z);
   mldsa_polyveck_reduce(&w1);
   mldsa_polyveck_invntt_tomont(&w1);
 
-  /* Decompose w and call the random oracle */
+  // Decompose w and derive the challenge.
   mldsa_polyveck_caddq(&w1);
   mldsa_polyveck_decompose(&w1, &w0, &w1);
   mldsa_polyveck_pack_w1(sig, &w1);
@@ -4684,7 +3330,7 @@ rej:
   mldsa_poly_challenge(&cp, sig);
   mldsa_poly_ntt(&cp);
 
-  /* Compute z, reject if it reveals secret */
+  // Compute z and reject if it is too large.
   mldsa_polyvecl_pointwise_poly_montgomery(&z, &cp, &s1);
   mldsa_polyvecl_invntt_tomont(&z);
   mldsa_polyvecl_add(&z, &z, &y);
@@ -4692,8 +3338,7 @@ rej:
   if(mldsa_polyvecl_chknorm(&z, MLDSA_GAMMA1 - MLDSA_BETA))
     goto rej;
 
-  /* Check that subtracting cs2 does not change high bits of w and low bits
-   * do not reveal secret information */
+  // Check the low bits before computing hints.
   mldsa_polyveck_pointwise_poly_montgomery(&h, &cp, &s2);
   mldsa_polyveck_invntt_tomont(&h);
   mldsa_polyveck_sub(&w0, &w0, &h);
@@ -4701,7 +3346,7 @@ rej:
   if(mldsa_polyveck_chknorm(&w0, MLDSA_GAMMA2 - MLDSA_BETA))
     goto rej;
 
-  /* Compute hints for w1 */
+  // Compute the hint vector.
   mldsa_polyveck_pointwise_poly_montgomery(&h, &cp, &t0);
   mldsa_polyveck_invntt_tomont(&h);
   mldsa_polyveck_reduce(&h);
@@ -4713,7 +3358,7 @@ rej:
   if(n > MLDSA_OMEGA)
     goto rej;
 
-  /* Write signature */
+  // Serialize the signature.
   mldsa_pack_sig(sig, sig, &z, &h);
   *siglen = MLDSA_CRYPTO_BYTES;
 
@@ -4727,21 +3372,7 @@ rej:
   return 0;
 }
 
-/*************************************************
-* Name:        mldsa_signature
-*
-* Description: Computes signature.
-*
-* Arguments:   - uint8_t *sig:   pointer to output signature (of length MLDSA_CRYPTO_BYTES)
-*              - size_t *siglen: pointer to output length of signature
-*              - uint8_t *m:     pointer to message to be signed
-*              - size_t mlen:    length of message
-*              - uint8_t *ctx:   pointer to contex string
-*              - size_t ctxlen:  length of contex string
-*              - uint8_t *sk:    pointer to bit-packed secret key
-*
-* Returns 0 (success) or -1 (context string too long)
-**************************************************/
+
 static int mldsa_signature(uint8_t *sig,
                           size_t *siglen,
                           const uint8_t *m,
@@ -4757,7 +3388,7 @@ static int mldsa_signature(uint8_t *sig,
   if(ctxlen > 255)
     return -1;
 
-  /* Prepare pre = (0, ctxlen, ctx) */
+  // Encode the context prefix.
   pre[0] = 0;
   pre[1] = ctxlen;
   for(i = 0; i < ctxlen; i++)
@@ -4771,21 +3402,6 @@ static int mldsa_signature(uint8_t *sig,
 }
 
 
-/*************************************************
-* Name:        mldsa_verify_internal
-*
-* Description: Verifies signature. Internal API.
-*
-* Arguments:   - uint8_t *m: pointer to input signature
-*              - size_t siglen: length of signature
-*              - const uint8_t *m: pointer to message
-*              - size_t mlen: length of message
-*              - const uint8_t *pre: pointer to prefix string
-*              - size_t prelen: length of prefix string
-*              - const uint8_t *pk: pointer to bit-packed public key
-*
-* Returns 0 if signature could be verified correctly and -1 otherwise
-**************************************************/
 static int mldsa_verify_internal(const uint8_t *sig,
                                 size_t siglen,
                                 const uint8_t *m,
@@ -4814,7 +3430,7 @@ static int mldsa_verify_internal(const uint8_t *sig,
   if(mldsa_polyvecl_chknorm(&z, MLDSA_GAMMA1 - MLDSA_BETA))
     return -1;
 
-  /* Compute CRH(H(rho, t1), pre, msg) */
+  // Derive the expected challenge.
   shake256(mu, MLDSA_TRBYTES, pk, MLDSA_CRYPTO_PUBLICKEYBYTES);
   shake256_init(&state);
   shake256_absorb(&state, mu, MLDSA_TRBYTES);
@@ -4823,7 +3439,7 @@ static int mldsa_verify_internal(const uint8_t *sig,
   shake256_finalize(&state);
   shake256_squeeze(mu, MLDSA_CRHBYTES, &state);
 
-  /* Matrix-vector multiplication; compute Az - c2^dt1 */
+  // Compute Az - c * 2^d * t1.
   mldsa_poly_challenge(&cp, c);
   mldsa_polyvec_matrix_expand(mat, rho);
 
@@ -4839,12 +3455,12 @@ static int mldsa_verify_internal(const uint8_t *sig,
   mldsa_polyveck_reduce(&w1);
   mldsa_polyveck_invntt_tomont(&w1);
 
-  /* Reconstruct w1 */
+  // Reconstruct the high bits of w.
   mldsa_polyveck_caddq(&w1);
   mldsa_polyveck_use_hint(&w1, &w1, &h);
   mldsa_polyveck_pack_w1(buf, &w1);
 
-  /* Call random oracle and verify challenge */
+  // Recompute and compare the challenge.
   shake256_init(&state);
   shake256_absorb(&state, mu, MLDSA_CRHBYTES);
   shake256_absorb(&state, buf, MLDSA_K*MLDSA_POLYW1_PACKEDBYTES);
@@ -4857,21 +3473,7 @@ static int mldsa_verify_internal(const uint8_t *sig,
   return 0;
 }
 
-/*************************************************
-* Name:        mldsa_verify
-*
-* Description: Verifies signature.
-*
-* Arguments:   - uint8_t *m: pointer to input signature
-*              - size_t siglen: length of signature
-*              - const uint8_t *m: pointer to message
-*              - size_t mlen: length of message
-*              - const uint8_t *ctx: pointer to context string
-*              - size_t ctxlen: length of context string
-*              - const uint8_t *pk: pointer to bit-packed public key
-*
-* Returns 0 if signature could be verified correctly and -1 otherwise
-**************************************************/
+
 static int mldsa_verify(const uint8_t *sig,
                        size_t siglen,
                        const uint8_t *m,
@@ -4911,9 +3513,8 @@ int ncrypt_mlkem768_encapsulate(uint8_t       ciphertext   [1088],
                                 const uint8_t public_key   [1184],
                                 uint8_t       seed         [32])
 {
-	// FIPS 203 asks us to reject encapsulation keys whose
-	// coefficients are not reduced mod q.  The reference unpacking
-	// keeps raw 12 bit values, so check them against q directly.
+	// FIPS 203 requires reduced public-key coefficients.
+	// The decoder retains raw 12-bit values, so check them here.
 	mlkem_polyvec t;
 	size_t i, j;
 	mlkem_polyvec_frombytes(&t, public_key);
@@ -4935,9 +3536,8 @@ int ncrypt_mlkem768_decapsulate(uint8_t       shared_secret[32],
                                 const uint8_t ciphertext   [1088],
                                 const uint8_t secret_key   [2400])
 {
-	// FIPS 203 hash check: the key must still contain the digest
-	// of its own public half.  Catches corrupted imports; forged
-	// ciphertexts are absorbed by implicit rejection instead.
+	// Check the digest stored with the public half of the key.
+	// A forged ciphertext is handled by implicit rejection.
 	uint8_t h[32];
 	sha3_256(h, secret_key + KYBER_INDCPA_SECRETKEYBYTES,
 	         KYBER_PUBLICKEYBYTES);
@@ -4966,8 +3566,8 @@ void ncrypt_mldsa44_sign(uint8_t        signature [2420],
                          const uint8_t  secret_key[2560],
                          const uint8_t *message, size_t message_size)
 {
-	// Pure ML-DSA-44, deterministic, empty context.  The empty
-	// context cannot overflow, so mldsa_signature cannot fail.
+	// Deterministic ML-DSA-44 with an empty context.
+	// The fixed context length cannot cause this call to fail.
 	size_t sig_size;
 	(void)mldsa_signature(signature, &sig_size,
 	                      message, message_size, 0, 0, secret_key);
@@ -4982,9 +3582,9 @@ int ncrypt_mldsa44_check(const uint8_t  signature [2420],
 }
 
 
-////////////////////////////
-/// High level wrappers  ///
-////////////////////////////
+///////////////////////////
+/// High-level wrappers ///
+///////////////////////////
 
 void ncrypt_pqc_key_pair(uint8_t secret_key[2400],
                          uint8_t public_key[1184],
@@ -5000,10 +3600,10 @@ void ncrypt_pqc_sign_key_pair(uint8_t secret_key[2560],
 	ncrypt_mldsa44_key_pair(secret_key, public_key, seed);
 }
 
-// The message key only ever protects a single message (the KEM
-// secret is fresh every time), so a fixed nonce is safe.  Hashing
-// the KEM ciphertext into the key also pins the AEAD text to this
-// exact encapsulation.
+// The KEM secret is intended to be fresh for every message, so the
+// fixed nonce is safe only when the caller supplies a fresh seed.
+// Hashing the KEM ciphertext into the key binds the AEAD key to this
+// encapsulation.
 static void pqc_message_key(uint8_t key[32], const uint8_t shared[32],
                             const uint8_t kem_ct[1088])
 {
@@ -5071,3 +3671,4 @@ int ncrypt_pqc_check(const uint8_t  signature [2420],
 	return ncrypt_mldsa44_check(signature, public_key,
 	                            message, message_size);
 }
+
